@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +23,14 @@ type SkillRef struct {
 	Tags []string `yaml:"tags,omitempty"`
 }
 
+// Source represents a remote Git source for a bundle
+type Source struct {
+	Type   string `yaml:"type"`   // MUST be "git"
+	URL    string `yaml:"url"`    // Git clone URL (HTTPS or SSH)
+	Branch string `yaml:"branch"` // Optional, defaults to "main"
+	Path   string `yaml:"path"`   // Optional subdirectory within repo
+}
+
 // Bundle is a named group of skills (e.g. "CEN", "personal")
 type Bundle struct {
 	Name        string     `yaml:"name"`
@@ -29,6 +38,7 @@ type Bundle struct {
 	Company     string     `yaml:"company,omitempty"`
 	Tags        []string   `yaml:"tags,omitempty"`
 	Tech        []string   `yaml:"tech,omitempty"` // technologies this bundle applies to
+	Source      *Source    `yaml:"source,omitempty"` // Optional Git source, nil = local-only
 	Skills      []SkillRef `yaml:"skills"`
 }
 
@@ -83,7 +93,32 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Tools) == 0 {
 		cfg.Tools = DefaultTools()
 	}
+	// Validate bundle sources
+	for _, bundle := range cfg.Bundles {
+		if bundle.Source != nil {
+			if err := validateSource(bundle.Source); err != nil {
+				return nil, fmt.Errorf("bundle %q: %w", bundle.Name, err)
+			}
+		}
+	}
 	return &cfg, nil
+}
+
+// validateSource checks if a Source configuration is valid
+func validateSource(src *Source) error {
+	if src.Type != "git" {
+		return fmt.Errorf("unsupported source type %q (must be \"git\")", src.Type)
+	}
+	if src.URL == "" {
+		return fmt.Errorf("source.url is required")
+	}
+	// Validate URL format (basic check for Git URLs)
+	if !strings.HasPrefix(src.URL, "https://") &&
+		!strings.HasPrefix(src.URL, "git://") &&
+		!strings.HasPrefix(src.URL, "git@") {
+		return fmt.Errorf("invalid Git URL %q (must start with https://, git://, or git@)", src.URL)
+	}
+	return nil
 }
 
 // DefaultConfigPath returns the default config file location
