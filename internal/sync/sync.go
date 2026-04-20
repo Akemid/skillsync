@@ -12,6 +12,9 @@ import (
 // execCommand is a variable to allow mocking in tests
 var execCommand = exec.CommandContext
 
+// execLookPath is a variable to allow mocking exec.LookPath in tests
+var execLookPath = exec.LookPath
+
 // Syncer manages Git-based bundle synchronization
 type Syncer struct {
 	remoteBaseDir string // e.g., ~/.agents/skills/_remote
@@ -32,6 +35,11 @@ func New(remoteBaseDir string) (*Syncer, error) {
 func (s *Syncer) SyncBundle(ctx context.Context, bundleName, url, branch string) error {
 	if branch == "" {
 		branch = "main"
+	}
+
+	// Check git binary is available before doing anything
+	if _, err := execLookPath("git"); err != nil {
+		return fmt.Errorf("git is not installed or not in PATH: install git and retry")
 	}
 
 	// Validate URL format
@@ -81,6 +89,16 @@ func (s *Syncer) cloneBundle(ctx context.Context, url, branch, targetDir string)
 
 // pullBundle updates an existing Git repository
 func (s *Syncer) pullBundle(ctx context.Context, targetDir string) error {
+	// Check for local modifications before pulling
+	statusCmd := execCommand(ctx, "git", "-C", targetDir, "status", "--porcelain")
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git status failed: %w\nOutput: %s", err, statusOutput)
+	}
+	if len(strings.TrimSpace(string(statusOutput))) > 0 {
+		return fmt.Errorf("bundle %q has local modifications — remove them or run: skillsync sync --clean", targetDir)
+	}
+
 	cmd := execCommand(ctx, "git", "-C", targetDir, "pull", "--ff-only")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -102,8 +120,9 @@ func validateGitURL(url string) error {
 	}
 	if !strings.HasPrefix(url, "https://") &&
 		!strings.HasPrefix(url, "git://") &&
-		!strings.HasPrefix(url, "git@") {
-		return fmt.Errorf("invalid Git URL %q (must start with https://, git://, or git@)", url)
+		!strings.HasPrefix(url, "git@") &&
+		!strings.HasPrefix(url, "file://") {
+		return fmt.Errorf("invalid Git URL %q (must start with https://, git://, git@, or file://)", url)
 	}
 	return nil
 }

@@ -63,11 +63,15 @@ func TestSyncBundle_UpdateExisting(t *testing.T) {
 
 	pullCalled := false
 	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		// Check for git pull command (args format: -C, <dir>, pull, --ff-only)
-		if name == "git" && len(args) >= 3 && args[0] == "-C" && args[2] == "pull" {
-			pullCalled = true
-			// Return successful command
-			return exec.Command("true")
+		if name == "git" && len(args) >= 3 && args[0] == "-C" {
+			switch args[2] {
+			case "status":
+				// No local modifications — empty output
+				return exec.Command("echo", "")
+			case "pull":
+				pullCalled = true
+				return exec.Command("true")
+			}
 		}
 		return exec.Command(name, args...)
 	}
@@ -262,6 +266,75 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestSyncBundle_GitNotInstalled verifies a clear error when git is not in PATH
+func TestSyncBundle_GitNotInstalled(t *testing.T) {
+	oldLookPath := execLookPath
+	defer func() { execLookPath = oldLookPath }()
+
+	// Mock git as missing
+	execLookPath = func(file string) (string, error) {
+		if file == "git" {
+			return "", fmt.Errorf("not found in PATH")
+		}
+		return exec.LookPath(file)
+	}
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	err = syncer.SyncBundle(ctx, "any-bundle", "https://github.com/test/repo", "main")
+	if err == nil {
+		t.Fatal("SyncBundle() error = nil, want error when git is missing")
+	}
+
+	if !contains(err.Error(), "git is not installed") {
+		t.Errorf("error message %q should mention 'git is not installed'", err.Error())
+	}
+	if !contains(err.Error(), "PATH") {
+		t.Errorf("error message %q should mention 'PATH'", err.Error())
+	}
+}
+
+// TestSyncBundle_LocalModifications verifies descriptive error when bundle has local changes
+func TestSyncBundle_LocalModifications(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) >= 3 && args[0] == "-C" && args[2] == "status" {
+			// Simulate modified file in working tree
+			return exec.Command("echo", " M some-file.md")
+		}
+		return exec.Command(name, args...)
+	}
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Create fake bundle with .git directory so pullBundle is triggered
+	bundleDir := filepath.Join(tempDir, "dirty-bundle")
+	if err := os.MkdirAll(filepath.Join(bundleDir, ".git"), 0755); err != nil {
+		t.Fatalf("creating .git dir: %v", err)
+	}
+
+	ctx := context.Background()
+	err = syncer.SyncBundle(ctx, "dirty-bundle", "https://github.com/test/repo", "main")
+	if err == nil {
+		t.Fatal("SyncBundle() error = nil, want error for local modifications")
+	}
+
+	if !contains(err.Error(), "local modifications") {
+		t.Errorf("error message %q should mention 'local modifications'", err.Error())
+	}
 }
 
 // Helper to create a mock exec.Command that fails

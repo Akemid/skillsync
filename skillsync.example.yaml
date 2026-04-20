@@ -44,6 +44,37 @@ bundles:
     skills:
       - name: "fastapi"
 
+  # Remote bundles — fetched from Git repositories with `skillsync sync`
+  # Skills are cloned into _remote/ under your registry_path (read-only, managed by skillsync)
+  # Run `skillsync sync` to fetch/update, then `skillsync install` to symlink
+
+  - name: "company-shared"
+    description: "Shared skills from company Git repo"
+    tags: ["company", "shared"]
+    # source.type: only "git" is supported
+    # source.url: HTTPS or SSH Git remote URL
+    # source.branch: branch to track (defaults to "main" if omitted)
+    # source.path: subdirectory inside the repo containing skills (optional)
+    source:
+      type: "git"
+      url: "https://github.com/your-org/agent-skills.git"
+      branch: "main"
+    skills:
+      - name: "onboarding"
+      - name: "code-review"
+
+  - name: "team-frontend"
+    description: "Frontend team skills via SSH"
+    tags: ["frontend", "team"]
+    # SSH URL format — requires SSH key configured for the host
+    source:
+      type: "git"
+      url: "git@github.com:your-org/frontend-skills.git"
+      branch: "stable"
+    skills:
+      - name: "design-system"
+      - name: "accessibility"
+
 # Agentic tools — where skills get symlinked to
 # Enabled tools are auto-detected at runtime; this list sets defaults
 tools:
