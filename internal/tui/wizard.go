@@ -1,14 +1,18 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/detector"
 	"github.com/Akemid/skillsync/internal/installer"
 	"github.com/Akemid/skillsync/internal/registry"
+	skillsync "github.com/Akemid/skillsync/internal/sync"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -43,16 +47,56 @@ type WizardResult struct {
 	ProjectDir     string
 }
 
-// RunWizard runs the interactive TUI wizard
+// newForm creates a themed form — DRY helper to avoid repeating WithTheme everywhere.
+func newForm(groups ...*huh.Group) *huh.Form {
+	return huh.NewForm(groups...).WithTheme(huh.ThemeCatppuccin())
+}
+
+// RunWizard orchestrates the interactive TUI wizard step by step.
 func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*WizardResult, error) {
 	fmt.Println(titleStyle.Render("⚡ skillsync — AI Agent Skills Installer"))
 	fmt.Println(dimStyle.Render("Synchronize skills across your agentic coding tools\n"))
 
 	result := &WizardResult{ProjectDir: projectDir}
 
-	// Step 1: Choose scope
+	scope, scopeStr, err := askScope()
+	if err != nil {
+		return nil, err
+	}
+	result.Scope = scope
+
+	bundle, skills, err := askSkills(cfg, reg)
+	if err != nil {
+		return nil, err
+	}
+	result.SelectedBundle = bundle
+	result.SelectedSkills = skills
+
+	printDetectedTech(projectDir)
+
+	tools, err := askTools(cfg)
+	if err != nil {
+		return nil, err
+	}
+	result.SelectedTools = tools
+
+	printSummary(result, scopeStr)
+
+	confirmed, err := askConfirm()
+	if err != nil {
+		return nil, err
+	}
+	if !confirmed {
+		return nil, fmt.Errorf("installation cancelled")
+	}
+
+	return result, nil
+}
+
+// askScope prompts the user to choose between global and project scope.
+func askScope() (installer.Scope, string, error) {
 	var scopeStr string
-	scopeForm := huh.NewForm(
+	err := newForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Installation scope").
@@ -63,157 +107,265 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 				).
 				Value(&scopeStr),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
-
-	if err := scopeForm.Run(); err != nil {
-		return nil, err
+	).Run()
+	if err != nil {
+		return installer.ScopeGlobal, "", err
 	}
 
 	if scopeStr == "global" {
-		result.Scope = installer.ScopeGlobal
-	} else {
-		result.Scope = installer.ScopeProject
+		return installer.ScopeGlobal, scopeStr, nil
+	}
+	return installer.ScopeProject, scopeStr, nil
+}
+
+// askSkills asks the user to select skills, either from a bundle or individually.
+// Returns the selected bundle name (empty if individual), the skill names, and any error.
+func askSkills(cfg *config.Config, reg *registry.Registry) (bundle string, skills []string, err error) {
+	mode, err := askSelectionMode(cfg)
+	if err != nil {
+		return "", nil, err
 	}
 
-	// Step 2: Choose bundle or individual skills
-	var selectionMode string
-	if len(cfg.Bundles) > 0 {
-		modeForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Skill selection").
-					Description("How would you like to select skills?").
-					Options(
-						huh.NewOption("Choose a bundle (pre-configured skill set)", "bundle"),
-						huh.NewOption("Pick individual skills from registry", "individual"),
-					).
-					Value(&selectionMode),
-			),
-		).WithTheme(huh.ThemeCatppuccin())
+	if mode == "bundle" {
+		bundle, skills, err = askBundleSkills(cfg)
+	} else {
+		skills, err = askIndividualSkills(reg)
+	}
+	if err != nil {
+		return "", nil, err
+	}
 
-		if err := modeForm.Run(); err != nil {
+	if len(skills) == 0 {
+		return "", nil, fmt.Errorf("no skills selected")
+	}
+
+	return bundle, skills, nil
+}
+
+// askSelectionMode asks whether the user wants a bundle or individual skill selection.
+// Returns "bundle" or "individual". Falls back to "individual" when no bundles are configured.
+func askSelectionMode(cfg *config.Config) (string, error) {
+	if len(cfg.Bundles) == 0 {
+		return "individual", nil
+	}
+
+	var mode string
+	err := newForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Skill selection").
+				Description("How would you like to select skills?").
+				Options(
+					huh.NewOption("Choose a bundle (pre-configured skill set)", "bundle"),
+					huh.NewOption("Pick individual skills from registry", "individual"),
+				).
+				Value(&mode),
+		),
+	).Run()
+
+	return mode, err
+}
+
+// askBundleSkills lets the user pick a bundle and resolves its skills.
+func askBundleSkills(cfg *config.Config) (bundle string, skills []string, err error) {
+	err = newForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select bundle").
+				Options(buildBundleOptions(cfg.Bundles)...).
+				Value(&bundle),
+		),
+	).Run()
+	if err != nil {
+		return "", nil, err
+	}
+
+	skills, err = resolveBundleSkills(cfg, bundle)
+	return bundle, skills, err
+}
+
+// buildBundleOptions converts bundle config into huh select options.
+func buildBundleOptions(bundles []config.Bundle) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(bundles))
+	for _, b := range bundles {
+		label := b.Name
+		if b.Company != "" {
+			label = fmt.Sprintf("%s (%s)", label, b.Company)
+		}
+		if b.Description != "" {
+			label = fmt.Sprintf("%s — %s", label, b.Description)
+		}
+		opts = append(opts, huh.NewOption(label, b.Name))
+	}
+	return opts
+}
+
+// resolveBundleSkills returns the skill names for the given bundle.
+// If the bundle has a remote source and hasn't been synced yet, it auto-syncs first.
+func resolveBundleSkills(cfg *config.Config, bundleName string) ([]string, error) {
+	for _, b := range cfg.Bundles {
+		if b.Name != bundleName {
+			continue
+		}
+		if len(b.Skills) > 0 {
+			return explicitBundleSkills(b), nil
+		}
+		if b.Source != nil {
+			return syncAndReadRemoteBundle(cfg, b)
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+// explicitBundleSkills extracts skill names from a bundle's inline skill list.
+func explicitBundleSkills(b config.Bundle) []string {
+	names := make([]string, 0, len(b.Skills))
+	for _, sr := range b.Skills {
+		names = append(names, sr.Name)
+	}
+	return names
+}
+
+// syncAndReadRemoteBundle ensures the bundle is synced locally, then returns its skill names.
+func syncAndReadRemoteBundle(cfg *config.Config, b config.Bundle) ([]string, error) {
+	registryPath := config.ExpandPath(cfg.RegistryPath)
+	remoteBundleDir := filepath.Join(registryPath, "_remote", b.Name)
+	if b.Source.Path != "" {
+		remoteBundleDir = filepath.Join(remoteBundleDir, b.Source.Path)
+	}
+
+	if _, err := os.Stat(remoteBundleDir); os.IsNotExist(err) {
+		if err := downloadRemoteBundle(cfg, b); err != nil {
 			return nil, err
 		}
-	} else {
-		selectionMode = "individual"
 	}
 
-	if selectionMode == "bundle" {
-		// Step 2a: Choose bundle
-		bundleOptions := make([]huh.Option[string], 0, len(cfg.Bundles))
-		for _, b := range cfg.Bundles {
-			label := b.Name
-			if b.Company != "" {
-				label = fmt.Sprintf("%s (%s)", b.Name, b.Company)
-			}
-			if b.Description != "" {
-				label = fmt.Sprintf("%s — %s", label, b.Description)
-			}
-			bundleOptions = append(bundleOptions, huh.NewOption(label, b.Name))
-		}
+	return readSkillsFromDir(remoteBundleDir, b.Name)
+}
 
-		bundleForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Select bundle").
-					Options(bundleOptions...).
-					Value(&result.SelectedBundle),
-			),
-		).WithTheme(huh.ThemeCatppuccin())
+// downloadRemoteBundle clones or pulls a remote bundle into the local registry.
+func downloadRemoteBundle(cfg *config.Config, b config.Bundle) error {
+	fmt.Println(dimStyle.Render(fmt.Sprintf("  Bundle %q not synced — downloading from %s...", b.Name, b.Source.URL)))
 
-		if err := bundleForm.Run(); err != nil {
-			return nil, err
-		}
-
-		// Resolve bundle skills
-		for _, b := range cfg.Bundles {
-			if b.Name == result.SelectedBundle {
-				for _, sr := range b.Skills {
-					result.SelectedSkills = append(result.SelectedSkills, sr.Name)
-				}
-				break
-			}
-		}
-	} else {
-		// Step 2b: Pick individual skills
-		skillOptions := make([]huh.Option[string], 0, len(reg.Skills))
-		for _, s := range reg.Skills {
-			label := s.Name
-			if s.Description != "" {
-				label = fmt.Sprintf("%s — %s", s.Name, s.Description)
-			}
-			skillOptions = append(skillOptions, huh.NewOption(label, s.Name))
-		}
-
-		if len(skillOptions) == 0 {
-			return nil, fmt.Errorf("no skills found in registry at %s", reg.BasePath)
-		}
-
-		skillForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[string]().
-					Title("Select skills to install").
-					Description("Space to select, Enter to confirm").
-					Options(skillOptions...).
-					Value(&result.SelectedSkills),
-			),
-		).WithTheme(huh.ThemeCatppuccin())
-
-		if err := skillForm.Run(); err != nil {
-			return nil, err
-		}
+	registryAbs := config.ExpandPath(cfg.RegistryPath)
+	syncer, err := skillsync.New(filepath.Join(registryAbs, "_remote"))
+	if err != nil {
+		return fmt.Errorf("initializing syncer: %w", err)
 	}
 
-	if len(result.SelectedSkills) == 0 {
-		return nil, fmt.Errorf("no skills selected")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if err := syncer.SyncBundle(ctx, b.Name, b.Source.URL, b.Source.Branch); err != nil {
+		return fmt.Errorf("auto-sync failed for bundle %q: %w\n\nRun manually: skillsync sync", b.Name, err)
 	}
 
-	// Step 3: Auto-detect tech and show it
-	if projectDir != "" {
-		techs := detector.Detect(projectDir)
-		if len(techs) > 0 {
-			fmt.Println(dimStyle.Render(fmt.Sprintf("  Detected tech: %s", strings.Join(techs, ", "))))
+	fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ %s synced", b.Name)))
+	return nil
+}
+
+// readSkillsFromDir returns the names of all non-hidden subdirectories in dir.
+func readSkillsFromDir(dir, bundleName string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading remote bundle %q: %w", bundleName, err)
+	}
+
+	var skills []string
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			skills = append(skills, entry.Name())
 		}
 	}
+	return skills, nil
+}
 
-	// Step 4: Choose target tools
-	toolOptions := make([]huh.Option[string], 0, len(cfg.Tools))
-	for _, t := range cfg.Tools {
-		label := t.Name
-		if t.Enabled {
-			label = fmt.Sprintf("%s (detected)", t.Name)
-		}
-		toolOptions = append(toolOptions, huh.NewOption(label, t.Name))
+// askIndividualSkills shows a multi-select with all available registry skills.
+func askIndividualSkills(reg *registry.Registry) ([]string, error) {
+	opts := buildSkillOptions(reg.Skills)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("no skills found in registry at %s", reg.BasePath)
 	}
 
-	// Pre-select enabled tools
-	var preSelected []string
-	for _, t := range cfg.Tools {
-		if t.Enabled {
-			preSelected = append(preSelected, t.Name)
-		}
-	}
-	result.SelectedTools = preSelected
+	var selected []string
+	err := newForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Select skills to install").
+				Description("Space to select, Enter to confirm").
+				Options(opts...).
+				Value(&selected),
+		),
+	).Run()
 
-	toolForm := huh.NewForm(
+	return selected, err
+}
+
+// buildSkillOptions converts registry skills into huh multi-select options.
+func buildSkillOptions(skills []registry.Skill) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(skills))
+	for _, s := range skills {
+		label := s.Name
+		if s.Description != "" {
+			label = fmt.Sprintf("%s — %s", s.Name, s.Description)
+		}
+		opts = append(opts, huh.NewOption(label, s.Name))
+	}
+	return opts
+}
+
+// printDetectedTech prints detected technologies for the given project directory.
+func printDetectedTech(projectDir string) {
+	if projectDir == "" {
+		return
+	}
+	techs := detector.Detect(projectDir)
+	if len(techs) > 0 {
+		fmt.Println(dimStyle.Render(fmt.Sprintf("  Detected tech: %s", strings.Join(techs, ", "))))
+	}
+}
+
+// askTools shows a multi-select with all configured tools, pre-selecting detected ones.
+func askTools(cfg *config.Config) ([]string, error) {
+	opts, preSelected := buildToolOptions(cfg.Tools)
+
+	selected := preSelected
+	err := newForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Target agentic tools").
 				Description("Which tools should receive these skills?").
-				Options(toolOptions...).
-				Value(&result.SelectedTools),
+				Options(opts...).
+				Value(&selected),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
-
-	if err := toolForm.Run(); err != nil {
+	).Run()
+	if err != nil {
 		return nil, err
 	}
 
-	if len(result.SelectedTools) == 0 {
+	if len(selected) == 0 {
 		return nil, fmt.Errorf("no tools selected")
 	}
+	return selected, nil
+}
 
-	// Step 5: Confirm
+// buildToolOptions converts tool config into huh multi-select options and returns pre-selected names.
+func buildToolOptions(tools []config.Tool) (opts []huh.Option[string], preSelected []string) {
+	opts = make([]huh.Option[string], 0, len(tools))
+	for _, t := range tools {
+		label := t.Name
+		if t.Enabled {
+			label = fmt.Sprintf("%s (detected)", t.Name)
+			preSelected = append(preSelected, t.Name)
+		}
+		opts = append(opts, huh.NewOption(label, t.Name))
+	}
+	return opts, preSelected
+}
+
+// printSummary displays the installation summary before the confirmation prompt.
+func printSummary(result *WizardResult, scopeStr string) {
 	fmt.Println(headerStyle.Render("\n📋 Installation Summary"))
 	fmt.Printf("  Skills:  %s\n", strings.Join(result.SelectedSkills, ", "))
 	fmt.Printf("  Tools:   %s\n", strings.Join(result.SelectedTools, ", "))
@@ -222,25 +374,19 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 		fmt.Printf("  Bundle:  %s\n", result.SelectedBundle)
 	}
 	fmt.Println()
+}
 
+// askConfirm asks the user to confirm the installation.
+func askConfirm() (bool, error) {
 	var confirm bool
-	confirmForm := huh.NewForm(
+	err := newForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Proceed with installation?").
 				Value(&confirm),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
-
-	if err := confirmForm.Run(); err != nil {
-		return nil, err
-	}
-
-	if !confirm {
-		return nil, fmt.Errorf("installation cancelled")
-	}
-
-	return result, nil
+	).Run()
+	return confirm, err
 }
 
 // PrintResults displays the installation results
