@@ -186,28 +186,20 @@ func askBundleSkills(cfg *config.Config, reg *registry.Registry) (bundle string,
 		return "", nil, err
 	}
 
-	skills, err = askBundleConfirmation(reg, skills)
+	skills, err = askBundleConfirmation(skills)
 	return bundle, skills, err
 }
 
-// askBundleConfirmation shows all registry skills with the bundle suggestion pre-selected.
-// The user can confirm, deselect, or add skills not included in the bundle.
-func askBundleConfirmation(reg *registry.Registry, preSelected []string) ([]string, error) {
-	preSet := make(map[string]bool, len(preSelected))
+// askBundleConfirmation shows only the bundle's skills as a multi-select.
+// The user can deselect individual skills before installing.
+func askBundleConfirmation(preSelected []string) ([]string, error) {
+	if len(preSelected) == 0 {
+		return nil, nil
+	}
+
+	opts := make([]huh.Option[string], 0, len(preSelected))
 	for _, name := range preSelected {
-		preSet[name] = true
-	}
-
-	opts := buildSkillOptions(reg.Skills)
-	if len(opts) == 0 {
-		// Registry is empty (e.g. first run before any local skills) — trust bundle list as-is
-		return preSelected, nil
-	}
-
-	for i, opt := range opts {
-		if preSet[opt.Value] {
-			opts[i] = opt.Selected(true)
-		}
+		opts = append(opts, huh.NewOption(name, name).Selected(true))
 	}
 
 	var selected []string
@@ -215,7 +207,8 @@ func askBundleConfirmation(reg *registry.Registry, preSelected []string) ([]stri
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Confirm skills to install").
-				Description("Bundle suggestion pre-selected. Space to toggle, Enter to confirm.").
+				Description("Space to deselect, Enter to confirm.").
+				Height(10).
 				Options(opts...).
 				Value(&selected),
 		),
@@ -281,7 +274,7 @@ func syncAndReadRemoteBundle(cfg *config.Config, b config.Bundle, reg *registry.
 			return nil, err
 		}
 		// Refresh registry so the newly cloned skills appear in the confirmation menu
-		if err := reg.Discover(); err != nil {
+		if err := reg.Discover(cfg.Bundles...); err != nil {
 			return nil, fmt.Errorf("refreshing registry after sync: %w", err)
 		}
 	}
@@ -339,6 +332,7 @@ func askIndividualSkills(reg *registry.Registry) ([]string, error) {
 			huh.NewMultiSelect[string]().
 				Title("Select skills to install").
 				Description("Space to select, Enter to confirm").
+				Height(10).
 				Options(opts...).
 				Value(&selected),
 		),
@@ -348,12 +342,17 @@ func askIndividualSkills(reg *registry.Registry) ([]string, error) {
 }
 
 // buildSkillOptions converts registry skills into huh multi-select options.
+// Descriptions are truncated to 60 chars to avoid wrapping in narrow terminals.
 func buildSkillOptions(skills []registry.Skill) []huh.Option[string] {
 	opts := make([]huh.Option[string], 0, len(skills))
 	for _, s := range skills {
 		label := s.Name
 		if s.Description != "" {
-			label = fmt.Sprintf("%s — %s", s.Name, s.Description)
+			desc := s.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			label = fmt.Sprintf("%s — %s", s.Name, desc)
 		}
 		opts = append(opts, huh.NewOption(label, s.Name))
 	}

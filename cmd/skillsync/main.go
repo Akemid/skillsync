@@ -72,7 +72,7 @@ func run() error {
 
 	// Initialize registry
 	reg := registry.New(cfg.RegistryPath)
-	if err := reg.Discover(); err != nil {
+	if err := reg.Discover(cfg.Bundles...); err != nil {
 		return fmt.Errorf("scanning skill registry: %w", err)
 	}
 

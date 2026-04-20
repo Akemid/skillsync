@@ -37,9 +37,17 @@ func New(basePath string) *Registry {
 	}
 }
 
-// Discover scans the registry directory and loads all skills
+// Discover scans the registry directory and loads all skills.
+// Pass bundles to respect source.path when scanning remote bundles.
 // Scans both local skills (basePath) and remote bundles (_remote/)
-func (r *Registry) Discover() error {
+func (r *Registry) Discover(bundles ...config.Bundle) error {
+	// Build a map of bundle name → source subpath for remote bundles
+	remotePaths := make(map[string]string)
+	for _, b := range bundles {
+		if b.Source != nil && b.Source.Path != "" {
+			remotePaths[b.Name] = b.Source.Path
+		}
+	}
 	entries, err := os.ReadDir(r.BasePath)
 	if err != nil {
 		return fmt.Errorf("reading registry %s: %w", r.BasePath, err)
@@ -65,6 +73,9 @@ func (r *Registry) Discover() error {
 				continue
 			}
 			bundlePath := filepath.Join(remoteDir, bundleEntry.Name())
+			if subPath, ok := remotePaths[bundleEntry.Name()]; ok {
+				bundlePath = filepath.Join(bundlePath, subPath)
+			}
 
 			// Scan skills inside bundle directory
 			if skillEntries, err := os.ReadDir(bundlePath); err == nil {
