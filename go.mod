@@ -1,4 +1,4 @@
-module github.com/sergiomondragonsilva/skillsync
+module github.com/Akemid/skillsync
 
 go 1.26.2
 

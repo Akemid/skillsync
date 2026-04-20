@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sergiomondragonsilva/skillsync/internal/config"
-	"github.com/sergiomondragonsilva/skillsync/internal/installer"
-	"github.com/sergiomondragonsilva/skillsync/internal/registry"
-	"github.com/sergiomondragonsilva/skillsync/internal/sync"
-	"github.com/sergiomondragonsilva/skillsync/internal/tui"
+	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/installer"
+	"github.com/Akemid/skillsync/internal/registry"
+	"github.com/Akemid/skillsync/internal/sync"
+	"github.com/Akemid/skillsync/internal/tui"
 )
 
 func main() {

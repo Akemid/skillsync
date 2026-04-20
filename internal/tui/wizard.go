@@ -5,12 +5,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/detector"
+	"github.com/Akemid/skillsync/internal/installer"
+	"github.com/Akemid/skillsync/internal/registry"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/sergiomondragonsilva/skillsync/internal/config"
-	"github.com/sergiomondragonsilva/skillsync/internal/detector"
-	"github.com/sergiomondragonsilva/skillsync/internal/installer"
-	"github.com/sergiomondragonsilva/skillsync/internal/registry"
 )
 
 var (

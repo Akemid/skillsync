@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sergiomondragonsilva/skillsync/internal/config"
-	"github.com/sergiomondragonsilva/skillsync/internal/registry"
+	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/registry"
 )
 
 // Scope determines where skills are installed

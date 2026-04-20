@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sergiomondragonsilva/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
