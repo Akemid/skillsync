@@ -1,0 +1,125 @@
+package registry
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/sergiomondragonsilva/skillsync/internal/config"
+	"gopkg.in/yaml.v3"
+)
+
+// SkillMeta holds the YAML frontmatter from a SKILL.md
+type SkillMeta struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+// Skill represents a discovered skill in the registry
+type Skill struct {
+	Name        string
+	Description string
+	Path        string   // absolute path to the skill folder
+	Files       []string // list of files in the skill folder
+}
+
+// Registry manages skills from a central directory
+type Registry struct {
+	BasePath string
+	Skills   []Skill
+}
+
+// New creates a Registry from the given base path (e.g. ~/.agents/skills)
+func New(basePath string) *Registry {
+	return &Registry{
+		BasePath: config.ExpandPath(basePath),
+	}
+}
+
+// Discover scans the registry directory and loads all skills
+func (r *Registry) Discover() error {
+	entries, err := os.ReadDir(r.BasePath)
+	if err != nil {
+		return fmt.Errorf("reading registry %s: %w", r.BasePath, err)
+	}
+
+	r.Skills = nil
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		skillPath := filepath.Join(r.BasePath, entry.Name())
+		skillMD := filepath.Join(skillPath, "SKILL.md")
+
+		skill := Skill{
+			Name: entry.Name(),
+			Path: skillPath,
+		}
+
+		// Try to read SKILL.md for metadata
+		if data, err := os.ReadFile(skillMD); err == nil {
+			if meta, err := parseFrontmatter(data); err == nil {
+				if meta.Description != "" {
+					skill.Description = meta.Description
+				}
+			}
+		}
+
+		// List files in the skill folder
+		if files, err := listFiles(skillPath); err == nil {
+			skill.Files = files
+		}
+
+		r.Skills = append(r.Skills, skill)
+	}
+	return nil
+}
+
+// FindByNames returns skills matching the given names
+func (r *Registry) FindByNames(names []string) []Skill {
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	var result []Skill
+	for _, s := range r.Skills {
+		if nameSet[s.Name] {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// parseFrontmatter extracts YAML frontmatter from a markdown file
+func parseFrontmatter(data []byte) (*SkillMeta, error) {
+	content := string(data)
+	if !strings.HasPrefix(content, "---\n") {
+		return nil, fmt.Errorf("no frontmatter found")
+	}
+	end := strings.Index(content[4:], "\n---")
+	if end < 0 {
+		return nil, fmt.Errorf("no frontmatter closing")
+	}
+	var meta SkillMeta
+	if err := yaml.Unmarshal([]byte(content[4:4+end]), &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// listFiles returns relative file paths inside a directory
+func listFiles(dir string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			rel, _ := filepath.Rel(dir, path)
+			files = append(files, rel)
+		}
+		return nil
+	})
+	return files, err
+}

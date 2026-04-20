@@ -1,0 +1,93 @@
+# Central registry path (where your master skill folders live)
+registry_path: "~/.agents/skills"
+
+# Skill bundles — pre-configured groups for quick install
+bundles:
+  - name: "cen-core"
+    company: "CEN"
+    description: "Core CEN development skills"
+    tags: ["chile", "enterprise"]
+    tech: ["go", "python", "typescript"]
+    skills:
+      - name: "sdd-init"
+      - name: "sdd-explore"
+      - name: "sdd-design"
+      - name: "sdd-propose"
+      - name: "sdd-spec"
+      - name: "sdd-apply"
+      - name: "sdd-verify"
+      - name: "sdd-archive"
+      - name: "sdd-tasks"
+
+  - name: "shared-tools"
+    description: "Common development utilities"
+    tags: ["utility"]
+    skills:
+      - name: "skill-creator"
+      - name: "find-skills"
+      - name: "go-testing"
+      - name: "_shared"
+      - name: "context7-mcp"
+
+  - name: "cloud-azure"
+    description: "Azure & cloud observability skills"
+    tags: ["cloud", "azure"]
+    tech: ["terraform", "kubernetes", "docker"]
+    skills:
+      - name: "azure-observability"
+      - name: "microsoft-foundry"
+
+  - name: "api-python"
+    description: "Python API development skills"
+    tags: ["api", "python"]
+    tech: ["python", "fastapi"]
+    skills:
+      - name: "fastapi"
+
+# Agentic tools — where skills get symlinked to
+# Enabled tools are auto-detected at runtime; this list sets defaults
+tools:
+  - name: "claude"
+    global_path: "~/.claude/skills"
+    local_path: ".claude/skills"
+    enabled: true
+
+  - name: "copilot"
+    global_path: "~/.copilot/skills"
+    local_path: ".copilot/skills"
+    enabled: true
+
+  - name: "codex"
+    global_path: "~/.codex/skills"
+    local_path: ".codex/skills"
+    enabled: true
+
+  - name: "kiro"
+    global_path: "~/.kiro/skills"
+    local_path: ".kiro/skills"
+    enabled: true
+
+  - name: "gemini"
+    global_path: "~/.gemini/skills"
+    local_path: ".gemini/skills"
+    enabled: true
+
+  - name: "cursor"
+    global_path: "~/.cursor/skills"
+    local_path: ".cursor/skills"
+    enabled: false
+
+  - name: "roo-code"
+    global_path: "~/.roo-code/skills"
+    local_path: ".roo-code/skills"
+    enabled: false
+
+  - name: "junie"
+    global_path: "~/.junie/skills"
+    local_path: ".junie/skills"
+    enabled: false
+
+  - name: "trae"
+    global_path: "~/.trae/skills"
+    local_path: ".trae/skills"
+    enabled: false
