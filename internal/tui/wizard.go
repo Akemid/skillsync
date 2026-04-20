@@ -127,7 +127,7 @@ func askSkills(cfg *config.Config, reg *registry.Registry) (bundle string, skill
 	}
 
 	if mode == "bundle" {
-		bundle, skills, err = askBundleSkills(cfg)
+		bundle, skills, err = askBundleSkills(cfg, reg)
 	} else {
 		skills, err = askIndividualSkills(reg)
 	}
@@ -166,8 +166,9 @@ func askSelectionMode(cfg *config.Config) (string, error) {
 	return mode, err
 }
 
-// askBundleSkills lets the user pick a bundle and resolves its skills.
-func askBundleSkills(cfg *config.Config) (bundle string, skills []string, err error) {
+// askBundleSkills lets the user pick a bundle, resolves its skills, then shows a
+// confirmation multi-select so the user can tweak the suggestion before installing.
+func askBundleSkills(cfg *config.Config, reg *registry.Registry) (bundle string, skills []string, err error) {
 	err = newForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -180,8 +181,47 @@ func askBundleSkills(cfg *config.Config) (bundle string, skills []string, err er
 		return "", nil, err
 	}
 
-	skills, err = resolveBundleSkills(cfg, bundle)
+	skills, err = resolveBundleSkills(cfg, bundle, reg)
+	if err != nil {
+		return "", nil, err
+	}
+
+	skills, err = askBundleConfirmation(reg, skills)
 	return bundle, skills, err
+}
+
+// askBundleConfirmation shows all registry skills with the bundle suggestion pre-selected.
+// The user can confirm, deselect, or add skills not included in the bundle.
+func askBundleConfirmation(reg *registry.Registry, preSelected []string) ([]string, error) {
+	preSet := make(map[string]bool, len(preSelected))
+	for _, name := range preSelected {
+		preSet[name] = true
+	}
+
+	opts := buildSkillOptions(reg.Skills)
+	if len(opts) == 0 {
+		// Registry is empty (e.g. first run before any local skills) — trust bundle list as-is
+		return preSelected, nil
+	}
+
+	for i, opt := range opts {
+		if preSet[opt.Value] {
+			opts[i] = opt.Selected(true)
+		}
+	}
+
+	var selected []string
+	err := newForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Confirm skills to install").
+				Description("Bundle suggestion pre-selected. Space to toggle, Enter to confirm.").
+				Options(opts...).
+				Value(&selected),
+		),
+	).Run()
+
+	return selected, err
 }
 
 // buildBundleOptions converts bundle config into huh select options.
@@ -202,7 +242,7 @@ func buildBundleOptions(bundles []config.Bundle) []huh.Option[string] {
 
 // resolveBundleSkills returns the skill names for the given bundle.
 // If the bundle has a remote source and hasn't been synced yet, it auto-syncs first.
-func resolveBundleSkills(cfg *config.Config, bundleName string) ([]string, error) {
+func resolveBundleSkills(cfg *config.Config, bundleName string, reg *registry.Registry) ([]string, error) {
 	for _, b := range cfg.Bundles {
 		if b.Name != bundleName {
 			continue
@@ -211,7 +251,7 @@ func resolveBundleSkills(cfg *config.Config, bundleName string) ([]string, error
 			return explicitBundleSkills(b), nil
 		}
 		if b.Source != nil {
-			return syncAndReadRemoteBundle(cfg, b)
+			return syncAndReadRemoteBundle(cfg, b, reg)
 		}
 		return nil, nil
 	}
@@ -228,7 +268,8 @@ func explicitBundleSkills(b config.Bundle) []string {
 }
 
 // syncAndReadRemoteBundle ensures the bundle is synced locally, then returns its skill names.
-func syncAndReadRemoteBundle(cfg *config.Config, b config.Bundle) ([]string, error) {
+// After a fresh clone it re-runs Discover so the registry reflects the new skills.
+func syncAndReadRemoteBundle(cfg *config.Config, b config.Bundle, reg *registry.Registry) ([]string, error) {
 	registryPath := config.ExpandPath(cfg.RegistryPath)
 	remoteBundleDir := filepath.Join(registryPath, "_remote", b.Name)
 	if b.Source.Path != "" {
@@ -238,6 +279,10 @@ func syncAndReadRemoteBundle(cfg *config.Config, b config.Bundle) ([]string, err
 	if _, err := os.Stat(remoteBundleDir); os.IsNotExist(err) {
 		if err := downloadRemoteBundle(cfg, b); err != nil {
 			return nil, err
+		}
+		// Refresh registry so the newly cloned skills appear in the confirmation menu
+		if err := reg.Discover(); err != nil {
+			return nil, fmt.Errorf("refreshing registry after sync: %w", err)
 		}
 	}
 
