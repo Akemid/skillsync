@@ -1,6 +1,6 @@
 # skillsync ⚡
 
-**AI Agent Skills Installer** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
+**AI Agent Skills Sync** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
 
 ## What it does
 
