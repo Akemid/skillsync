@@ -64,10 +64,25 @@ ${DOWNLOAD} "${CHECKSUMS_URL}" > "${TMP_DIR}/checksums.txt"
 
 # Verify checksum
 cd "${TMP_DIR}"
-if command -v sha256sum > /dev/null 2>&1; then
-  grep "${ARCHIVE}" checksums.txt | sha256sum --check --status
-elif command -v shasum > /dev/null 2>&1; then
-  grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
+if command -v sha256sum > /dev/null 2>&1 || command -v shasum > /dev/null 2>&1; then
+  # Extract expected checksum from checksums.txt
+  EXPECTED_CHECKSUM=$(grep "${ARCHIVE}" checksums.txt | awk '{print $1}')
+
+  # Calculate actual checksum
+  if command -v sha256sum > /dev/null 2>&1; then
+    ACTUAL_CHECKSUM=$(sha256sum "${ARCHIVE}" | awk '{print $1}')
+  else
+    ACTUAL_CHECKSUM=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
+  fi
+
+  # Compare checksums
+  if [ "${EXPECTED_CHECKSUM}" != "${ACTUAL_CHECKSUM}" ]; then
+    echo "Error: checksum verification failed" >&2
+    echo "Expected: ${EXPECTED_CHECKSUM}" >&2
+    echo "Got:      ${ACTUAL_CHECKSUM}" >&2
+    exit 1
+  fi
+  echo "Checksum verified ✓"
 else
   echo "Warning: sha256sum/shasum not found, skipping checksum verification" >&2
 fi
