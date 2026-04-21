@@ -123,20 +123,77 @@ Skills are cloned into `_remote/<bundle-name>/` inside your registry path:
 
 > **`_remote/` is read-only** — never edit files inside it. Re-run `skillsync sync` to update.
 
-### Configuration
+### Bundle configuration reference
 
+Every bundle (local or remote) supports these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Unique identifier used as the directory name under `_remote/` |
+| `description` | no | Human-readable summary shown in the wizard |
+| `company` | no | Organization label (displayed in the TUI) |
+| `tags` | no | String list for filtering (e.g. `["cloud", "azure"]`) |
+| `tech` | no | Technology stack hints (e.g. `["go", "python"]`) |
+| `source` | no | Omit for local bundles; add for Git-backed bundles |
+| `skills` | yes | List of `{ name: "skill-name" }` entries to install |
+
+#### `source` block parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `type` | yes | — | Only `"git"` is supported |
+| `url` | yes | — | HTTPS or SSH remote URL |
+| `branch` | no | `"main"` | Branch, tag, or commit SHA to track |
+| `path` | no | repo root | Subdirectory **inside** the repo that contains the skill folders |
+
+When `path` is set, skillsync descends into that subdirectory after cloning and treats it as the skill root. Use this when your skills live in a sub-folder of a larger monorepo.
+
+### Configuration examples
+
+**HTTPS — public repo, skills at repo root:**
 ```yaml
 bundles:
-  - name: "my-org-skills"
-    description: "Shared skills from our org"
+  - name: "company-shared"
+    description: "Shared skills from company Git repo"
+    tags: ["company", "shared"]
     source:
-      type: git
+      type: "git"
       url: "https://github.com/your-org/agent-skills.git"
-      branch: "main"   # optional, defaults to main
-      path: "skills"   # optional: subdirectory inside the repo
+      branch: "main"
+    skills:
+      - name: "onboarding"
+      - name: "code-review"
+```
+
+**SSH — private repo, skills in a subdirectory:**
+```yaml
+bundles:
+  - name: "team-frontend"
+    description: "Frontend team skills"
+    company: "Acme"
+    tags: ["frontend", "team"]
+    tech: ["typescript"]
+    source:
+      type: "git"
+      url: "git@github.com:your-org/monorepo.git"
+      branch: "stable"
+      path: "tools/agent-skills"   # skills live inside tools/agent-skills/
+    skills:
+      - name: "design-system"
+      - name: "accessibility"
+```
+
+**Pinned to a tag or commit SHA:**
+```yaml
+bundles:
+  - name: "org-skills-pinned"
+    description: "Pinned to a stable release"
+    source:
+      type: "git"
+      url: "https://github.com/your-org/agent-skills.git"
+      branch: "v1.2.0"   # tag or commit SHA both work
     skills:
       - name: "code-review"
-      - name: "incident-response"
 ```
 
 ### HTTPS vs SSH authentication
