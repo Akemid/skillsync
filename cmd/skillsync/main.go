@@ -48,6 +48,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		cfg := &config.Config{
 			RegistryPath: "~/.agents/skills",
+			Bundles:      config.DefaultBundles(),
 			Tools:        config.DefaultTools(),
 		}
 		return cmdInit(cfg, configPath)
@@ -60,6 +61,7 @@ func run() error {
 		if errors.Is(err, os.ErrNotExist) {
 			cfg = &config.Config{
 				RegistryPath: "~/.agents/skills",
+				Bundles:      config.DefaultBundles(),
 				Tools:        config.DefaultTools(),
 			}
 		} else {
@@ -93,6 +95,8 @@ func run() error {
 			return cmdStatus(cfg, reg)
 		case "sync":
 			return cmdSync(cfg)
+		case "remote":
+			return cmdRemote(cfg, configPath)
 		case "uninstall":
 			return cmdUninstall(cfg, reg, projectDir)
 		case "--help", "-h", "help":
@@ -111,6 +115,10 @@ func run() error {
 	result, err := tui.RunWizard(cfg, reg, projectDir)
 	if err != nil {
 		return err
+	}
+	if result == nil {
+		// add-remote mode completed — no installation to do
+		return nil
 	}
 
 	// Resolve selected tools
@@ -240,6 +248,108 @@ func cmdSync(cfg *config.Config) error {
 	return nil
 }
 
+func cmdRemote(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage:")
+		fmt.Println("  skillsync remote add <name> <url> [--branch <branch>] [--path <path>] [--company <company>]")
+		fmt.Println("  skillsync remote list")
+		return nil
+	}
+
+	switch os.Args[2] {
+	case "list":
+		return cmdRemoteList(cfg)
+	case "add":
+		return cmdRemoteAdd(cfg, configPath)
+	default:
+		return fmt.Errorf("unknown remote subcommand: %s", os.Args[2])
+	}
+}
+
+func cmdRemoteList(cfg *config.Config) error {
+	var remotes []config.Bundle
+	for _, b := range cfg.Bundles {
+		if b.Source != nil {
+			remotes = append(remotes, b)
+		}
+	}
+	if len(remotes) == 0 {
+		fmt.Println("No remote bundles configured.")
+		return nil
+	}
+	fmt.Printf("Remote bundles (%d):\n\n", len(remotes))
+	for _, b := range remotes {
+		company := ""
+		if b.Company != "" {
+			company = fmt.Sprintf(" [%s]", b.Company)
+		}
+		fmt.Printf("  %-20s%s\n", b.Name, company)
+		fmt.Printf("    url:    %s\n", b.Source.URL)
+		fmt.Printf("    branch: %s\n", b.Source.Branch)
+		if b.Source.Path != "" {
+			fmt.Printf("    path:   %s\n", b.Source.Path)
+		}
+	}
+	return nil
+}
+
+func cmdRemoteAdd(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 5 {
+		return fmt.Errorf("usage: skillsync remote add <name> <url> [--branch <branch>] [--path <path>] [--company <company>]")
+	}
+	name := os.Args[3]
+	url := os.Args[4]
+	branch := "main"
+	path := ""
+	company := ""
+
+	args := os.Args[5:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--branch":
+			if i+1 < len(args) {
+				i++
+				branch = args[i]
+			}
+		case "--path":
+			if i+1 < len(args) {
+				i++
+				path = args[i]
+			}
+		case "--company":
+			if i+1 < len(args) {
+				i++
+				company = args[i]
+			}
+		}
+	}
+
+	// Check for duplicates
+	for _, b := range cfg.Bundles {
+		if b.Name == name {
+			return fmt.Errorf("bundle %q already exists in config", name)
+		}
+	}
+
+	cfg.Bundles = append(cfg.Bundles, config.Bundle{
+		Name:    name,
+		Company: company,
+		Source: &config.Source{
+			Type:   "git",
+			URL:    url,
+			Branch: branch,
+			Path:   path,
+		},
+	})
+
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	fmt.Printf("Bundle %q added to config (%s)\n", name, configPath)
+	fmt.Printf("Run `skillsync sync` to fetch it.\n")
+	return nil
+}
+
 func cmdInit(cfg *config.Config, configPath string) error {
 	if err := config.Save(cfg, configPath); err != nil {
 		return err
@@ -252,10 +362,12 @@ func printUsage() {
 	fmt.Println(`skillsync — AI Agent Skills Installer
 
 Usage:
-  skillsync              Run interactive wizard
+  skillsync              Run interactive wizard (install or add remote)
   skillsync list         List skills in registry
   skillsync status       Show installed skills per tool
   skillsync sync         Fetch/update remote bundles from Git
+  skillsync remote list  List configured remote bundles
+  skillsync remote add   Add a remote bundle to config
   skillsync uninstall    Remove a skill symlink
   skillsync init         Generate default config file
   skillsync help         Show this help

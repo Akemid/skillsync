@@ -37,7 +37,7 @@ type Bundle struct {
 	Description string     `yaml:"description,omitempty"`
 	Company     string     `yaml:"company,omitempty"`
 	Tags        []string   `yaml:"tags,omitempty"`
-	Tech        []string   `yaml:"tech,omitempty"` // technologies this bundle applies to
+	Tech        []string   `yaml:"tech,omitempty"`   // technologies this bundle applies to
 	Source      *Source    `yaml:"source,omitempty"` // Optional Git source, nil = local-only
 	Skills      []SkillRef `yaml:"skills"`
 }
@@ -47,6 +47,25 @@ type Config struct {
 	RegistryPath string   `yaml:"registry_path"` // path to skill registry (e.g. ~/.agents/skills)
 	Bundles      []Bundle `yaml:"bundles"`
 	Tools        []Tool   `yaml:"tools"`
+}
+
+// DefaultBundles returns the pre-configured list of well-known remote bundles.
+// These are included when running `skillsync init` so users don't need to know the URLs.
+func DefaultBundles() []Bundle {
+	return []Bundle{
+		{
+			Name:        "frontend-cen",
+			Description: "CEN frontend AI skills",
+			Company:     "CEN",
+			Tags:        []string{"cen", "frontend"},
+			Source: &Source{
+				Type:   "git",
+				URL:    "https://github.com/Akemid/cen-ai-tools",
+				Branch: "main",
+				Path:   "skills",
+			},
+		},
+	}
 }
 
 // DefaultTools returns the pre-configured list of agentic tools

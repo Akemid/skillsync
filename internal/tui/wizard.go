@@ -65,6 +65,15 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 	fmt.Println(titleStyle.Render(banner))
 	fmt.Println(dimStyle.Render("  Synchronize skills across your agentic coding tools\n"))
 
+	mode, err := askWizardMode()
+	if err != nil {
+		return nil, err
+	}
+
+	if mode == "add-remote" {
+		return nil, runAddRemoteWizard(cfg)
+	}
+
 	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
 
 	scope, scopeStr, err := askScope()
@@ -110,6 +119,122 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 	}
 
 	return result, nil
+}
+
+// askWizardMode asks the user what they want to do.
+func askWizardMode() (string, error) {
+	var mode string
+	err := newForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("What do you want to do?").
+				Options(
+					huh.NewOption("Install skills", "install"),
+					huh.NewOption("Add remote repository", "add-remote"),
+				).
+				Value(&mode),
+		),
+	).Run()
+	return mode, err
+}
+
+// runAddRemoteWizard guides the user through adding a new remote bundle to the config.
+// It writes the bundle to the config file and offers to sync it immediately.
+func runAddRemoteWizard(cfg *config.Config) error {
+	var name, url, branch, path, company string
+	branch = "main"
+
+	err := newForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Bundle name").
+				Description("Short identifier (e.g. company-skills)").
+				Value(&name),
+			huh.NewInput().
+				Title("Git URL").
+				Description("HTTPS or SSH clone URL").
+				Value(&url),
+			huh.NewInput().
+				Title("Branch").
+				Description("Branch to track (default: main)").
+				Value(&branch),
+			huh.NewInput().
+				Title("Path (optional)").
+				Description("Subdirectory inside the repo containing skills").
+				Value(&path),
+			huh.NewInput().
+				Title("Company (optional)").
+				Description("Company or team name (e.g. Acme)").
+				Value(&company),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	if name == "" || url == "" {
+		return fmt.Errorf("bundle name and URL are required")
+	}
+
+	src := &config.Source{
+		Type:   "git",
+		URL:    url,
+		Branch: branch,
+		Path:   path,
+	}
+
+	bundle := config.Bundle{
+		Name:    name,
+		Company: company,
+		Source:  src,
+	}
+
+	cfg.Bundles = append(cfg.Bundles, bundle)
+
+	configPath := config.DefaultConfigPath()
+	fmt.Println(dimStyle.Render("\n  ⚠  This will overwrite your config file (comments and custom formatting will be lost)."))
+
+	var confirmed bool
+	err = newForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Save bundle %q to %s?", name, configPath)).
+				Value(&confirmed),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return fmt.Errorf("cancelled")
+	}
+
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ Bundle %q saved to config", name)))
+
+	var doSync bool
+	err = newForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Sync the bundle now?").
+				Value(&doSync),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	if doSync {
+		if err := downloadRemoteBundle(cfg, bundle); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println(dimStyle.Render(fmt.Sprintf("  Run `skillsync sync` to fetch %q later.", name)))
+	}
+
+	return nil
 }
 
 // askScope prompts the user to choose between global and project scope.
