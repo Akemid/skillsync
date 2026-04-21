@@ -34,11 +34,27 @@ func TestLocalBundleSkills(t *testing.T) {
 		{
 			name: "multiple skills returns all names",
 			skills: []registry.Skill{
-				{Name: "fastapi"},
-				{Name: "linting"},
-				{Name: "docs"},
+				{Name: "fastapi", Path: "/home/user/.agents/skills/fastapi"},
+				{Name: "linting", Path: "/home/user/.agents/skills/linting"},
+				{Name: "docs", Path: "/home/user/.agents/skills/docs"},
 			},
 			want: []string{"fastapi", "linting", "docs"},
+		},
+		{
+			name: "excludes remote bundle skills",
+			skills: []registry.Skill{
+				{Name: "local-skill", Path: "/home/user/.agents/skills/local-skill"},
+				{Name: "remote-skill", Path: "/home/user/.agents/skills/_remote/team-frontend/skills/remote-skill"},
+			},
+			want: []string{"local-skill"},
+		},
+		{
+			name: "all remote returns empty",
+			skills: []registry.Skill{
+				{Name: "skill-a", Path: "/home/user/.agents/skills/_remote/bundle-x/skills/skill-a"},
+				{Name: "skill-b", Path: "/home/user/.agents/skills/_remote/bundle-y/skill-b"},
+			},
+			want: []string{},
 		},
 	}
 

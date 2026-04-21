@@ -137,7 +137,8 @@ const localBundleKey = "__local__"
 func askBundles(cfg *config.Config, reg *registry.Registry) ([]string, error) {
 	opts := make([]huh.Option[string], 0, len(cfg.Bundles)+1)
 
-	localLabel := fmt.Sprintf("Local skills (%d available)", len(reg.Skills))
+	localSkills := localBundleSkills(reg)
+	localLabel := fmt.Sprintf("Local skills (%d available)", len(localSkills))
 	opts = append(opts, huh.NewOption(localLabel, localBundleKey))
 
 	for _, b := range cfg.Bundles {
@@ -233,10 +234,13 @@ func pickSkillsFromList(bundleName string, skills []string) ([]string, error) {
 }
 
 // localBundleSkills returns the names of all skills in the local registry.
+// localBundleSkills returns only skills from the local registry (not from _remote/ bundles).
 func localBundleSkills(reg *registry.Registry) []string {
 	names := make([]string, 0, len(reg.Skills))
 	for _, s := range reg.Skills {
-		names = append(names, s.Name)
+		if !strings.Contains(s.Path, "/_remote/") {
+			names = append(names, s.Name)
+		}
 	}
 	return names
 }
