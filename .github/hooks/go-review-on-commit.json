@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": ".github/hooks/scripts/go-review-on-commit.sh",
+        "timeout": 60
+      }
+    ]
+  }
+}

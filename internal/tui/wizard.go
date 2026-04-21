@@ -17,6 +17,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const banner = `
+   _____ __   _ _________                 
+  / ___// /__(_) / / ___/__  ______  _____
+  \__ \/ //_/ / / /\__ \/ / / / __ \/ ___/
+ ___/ / ,< / / / /___/ / /_/ / / / / /__  
+/____/_/|_/_/_/_//____/\__, /_/ /_/\___/  
+                      /____/              `
+
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -54,8 +62,8 @@ func newForm(groups ...*huh.Group) *huh.Form {
 
 // RunWizard orchestrates the interactive TUI wizard step by step.
 func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*WizardResult, error) {
-	fmt.Println(titleStyle.Render("⚡ skillsync — AI Agent Skills Installer"))
-	fmt.Println(dimStyle.Render("Synchronize skills across your agentic coding tools\n"))
+	fmt.Println(titleStyle.Render(banner))
+	fmt.Println(dimStyle.Render("  Synchronize skills across your agentic coding tools\n"))
 
 	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
 
@@ -344,28 +352,6 @@ func readSkillsFromDir(dir, bundleName string) ([]string, error) {
 		}
 	}
 	return skills, nil
-}
-
-// askIndividualSkills shows a multi-select with all available registry skills.
-func askIndividualSkills(reg *registry.Registry) ([]string, error) {
-	opts := buildSkillOptions(reg.Skills)
-	if len(opts) == 0 {
-		return nil, fmt.Errorf("no skills found in registry at %s", reg.BasePath)
-	}
-
-	var selected []string
-	err := newForm(
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Select skills to install").
-				Description("Space to select, Enter to confirm").
-				Height(10).
-				Options(opts...).
-				Value(&selected),
-		),
-	).Run()
-
-	return selected, err
 }
 
 // buildSkillOptions converts registry skills into huh multi-select options.
