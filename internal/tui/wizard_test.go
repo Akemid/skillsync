@@ -10,79 +10,105 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// buildBundleOptions
+// localBundleSkills
 // ---------------------------------------------------------------------------
 
-func TestBuildBundleOptions_Labels(t *testing.T) {
+func TestLocalBundleSkills(t *testing.T) {
 	tests := []struct {
-		name     string
-		bundles  []config.Bundle
-		wantKeys []string
-		wantVals []string
+		name   string
+		skills []registry.Skill
+		want   []string
 	}{
 		{
-			name: "name only",
-			bundles: []config.Bundle{
-				{Name: "core"},
-			},
-			wantKeys: []string{"core"},
-			wantVals: []string{"core"},
+			name:   "empty registry",
+			skills: []registry.Skill{},
+			want:   []string{},
 		},
 		{
-			name: "with company",
-			bundles: []config.Bundle{
-				{Name: "enterprise", Company: "Acme"},
+			name: "single skill",
+			skills: []registry.Skill{
+				{Name: "go-testing"},
 			},
-			wantKeys: []string{"enterprise (Acme)"},
-			wantVals: []string{"enterprise"},
+			want: []string{"go-testing"},
 		},
 		{
-			name: "with company and description",
-			bundles: []config.Bundle{
-				{Name: "full", Company: "Corp", Description: "all skills"},
+			name: "multiple skills returns all names",
+			skills: []registry.Skill{
+				{Name: "fastapi"},
+				{Name: "linting"},
+				{Name: "docs"},
 			},
-			wantKeys: []string{"full (Corp) — all skills"},
-			wantVals: []string{"full"},
-		},
-		{
-			name: "description without company",
-			bundles: []config.Bundle{
-				{Name: "minimal", Description: "bare minimum"},
-			},
-			wantKeys: []string{"minimal — bare minimum"},
-			wantVals: []string{"minimal"},
-		},
-		{
-			name: "multiple bundles",
-			bundles: []config.Bundle{
-				{Name: "a"},
-				{Name: "b", Company: "X"},
-			},
-			wantKeys: []string{"a", "b (X)"},
-			wantVals: []string{"a", "b"},
-		},
-		{
-			name:     "empty slice",
-			bundles:  []config.Bundle{},
-			wantKeys: []string{},
-			wantVals: []string{},
+			want: []string{"fastapi", "linting", "docs"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opts := buildBundleOptions(tt.bundles)
+			reg := &registry.Registry{Skills: tt.skills}
+			got := localBundleSkills(reg)
 
-			if len(opts) != len(tt.wantKeys) {
-				t.Fatalf("len(opts) = %d, want %d", len(opts), len(tt.wantKeys))
+			if len(got) != len(tt.want) {
+				t.Fatalf("len = %d, want %d; got %v", len(got), len(tt.want), got)
+			}
+			for i, name := range tt.want {
+				if got[i] != name {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], name)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// flattenSkills
+// ---------------------------------------------------------------------------
+
+func TestFlattenSkills(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   map[string][]string
+		wantLen int
+		wantAll []string // every name must appear exactly once
+	}{
+		{
+			name:    "empty map",
+			input:   map[string][]string{},
+			wantLen: 0,
+			wantAll: nil,
+		},
+		{
+			name:    "single bundle",
+			input:   map[string][]string{"local": {"go-testing", "fastapi"}},
+			wantLen: 2,
+			wantAll: []string{"go-testing", "fastapi"},
+		},
+		{
+			name: "deduplicates across bundles",
+			input: map[string][]string{
+				"bundle-a": {"skill-1", "shared"},
+				"bundle-b": {"shared", "skill-2"},
+			},
+			wantLen: 3,
+			wantAll: []string{"skill-1", "shared", "skill-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := flattenSkills(tt.input)
+
+			if len(got) != tt.wantLen {
+				t.Fatalf("len = %d, want %d; got %v", len(got), tt.wantLen, got)
 			}
 
-			for i, opt := range opts {
-				if opt.Key != tt.wantKeys[i] {
-					t.Errorf("opts[%d].Key = %q, want %q", i, opt.Key, tt.wantKeys[i])
-				}
-				if opt.Value != tt.wantVals[i] {
-					t.Errorf("opts[%d].Value = %q, want %q", i, opt.Value, tt.wantVals[i])
+			// Verify each expected name appears exactly once
+			counts := make(map[string]int, len(got))
+			for _, name := range got {
+				counts[name]++
+			}
+			for _, name := range tt.wantAll {
+				if counts[name] != 1 {
+					t.Errorf("%q appears %d times, want 1", name, counts[name])
 				}
 			}
 		})
@@ -124,6 +150,14 @@ func TestBuildSkillOptions_Labels(t *testing.T) {
 			},
 			wantKeys: []string{"a — does a", "b"},
 			wantVals: []string{"a", "b"},
+		},
+		{
+			name: "long description is truncated at 60 chars",
+			skills: []registry.Skill{
+				{Name: "long-skill", Description: "This description is longer than sixty characters for testing!"},
+			},
+			wantKeys: []string{"long-skill — This description is longer than sixty characters for test..."},
+			wantVals: []string{"long-skill"},
 		},
 		{
 			name:     "empty",

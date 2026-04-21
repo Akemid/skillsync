@@ -40,8 +40,8 @@ var (
 
 // WizardResult holds the user's selections from the TUI wizard
 type WizardResult struct {
-	SelectedBundle string
-	SelectedSkills []string
+	SkillsByBundle map[string][]string // skills grouped by bundle, for summary
+	SelectedSkills []string            // flattened + deduplicated, for installation
 	SelectedTools  []string
 	Scope          installer.Scope
 	ProjectDir     string
@@ -57,7 +57,7 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 	fmt.Println(titleStyle.Render("⚡ skillsync — AI Agent Skills Installer"))
 	fmt.Println(dimStyle.Render("Synchronize skills across your agentic coding tools\n"))
 
-	result := &WizardResult{ProjectDir: projectDir}
+	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
 
 	scope, scopeStr, err := askScope()
 	if err != nil {
@@ -65,12 +65,23 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 	}
 	result.Scope = scope
 
-	bundle, skills, err := askSkills(cfg, reg)
+	// Step 1: pick one or more bundles
+	selectedBundles, err := askBundles(cfg, reg)
 	if err != nil {
 		return nil, err
 	}
-	result.SelectedBundle = bundle
-	result.SelectedSkills = skills
+
+	// Step 2: for each bundle, pick its skills
+	skillsByBundle, err := pickSkillsPerBundle(cfg, reg, selectedBundles)
+	if err != nil {
+		return nil, err
+	}
+	result.SkillsByBundle = skillsByBundle
+	result.SelectedSkills = flattenSkills(skillsByBundle)
+
+	if len(result.SelectedSkills) == 0 {
+		return nil, fmt.Errorf("no skills selected")
+	}
 
 	printDetectedTech(projectDir)
 
@@ -118,87 +129,91 @@ func askScope() (installer.Scope, string, error) {
 	return installer.ScopeProject, scopeStr, nil
 }
 
-// askSkills asks the user to select skills, either from a bundle or individually.
-// Returns the selected bundle name (empty if individual), the skill names, and any error.
-func askSkills(cfg *config.Config, reg *registry.Registry) (bundle string, skills []string, err error) {
-	mode, err := askSelectionMode(cfg)
-	if err != nil {
-		return "", nil, err
+// localBundleKey is the virtual bundle identifier for skills in the local registry.
+const localBundleKey = "__local__"
+
+// askBundles shows a multi-select of all available bundles.
+// A virtual "Local skills" entry (skills already in ~/.agents/skills) is always listed first.
+func askBundles(cfg *config.Config, reg *registry.Registry) ([]string, error) {
+	opts := make([]huh.Option[string], 0, len(cfg.Bundles)+1)
+
+	localLabel := fmt.Sprintf("Local skills (%d available)", len(reg.Skills))
+	opts = append(opts, huh.NewOption(localLabel, localBundleKey))
+
+	for _, b := range cfg.Bundles {
+		label := b.Name
+		if b.Description != "" {
+			desc := b.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			label = fmt.Sprintf("%s — %s", b.Name, desc)
+		}
+		opts = append(opts, huh.NewOption(label, b.Name))
 	}
 
-	if mode == "bundle" {
-		bundle, skills, err = askBundleSkills(cfg, reg)
-	} else {
-		skills, err = askIndividualSkills(reg)
-	}
-	if err != nil {
-		return "", nil, err
-	}
-
-	if len(skills) == 0 {
-		return "", nil, fmt.Errorf("no skills selected")
-	}
-
-	return bundle, skills, nil
-}
-
-// askSelectionMode asks whether the user wants a bundle or individual skill selection.
-// Returns "bundle" or "individual". Falls back to "individual" when no bundles are configured.
-func askSelectionMode(cfg *config.Config) (string, error) {
-	if len(cfg.Bundles) == 0 {
-		return "individual", nil
-	}
-
-	var mode string
+	var selected []string
 	err := newForm(
 		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Skill selection").
-				Description("How would you like to select skills?").
-				Options(
-					huh.NewOption("Choose a bundle (pre-configured skill set)", "bundle"),
-					huh.NewOption("Pick individual skills from registry", "individual"),
-				).
-				Value(&mode),
-		),
-	).Run()
-
-	return mode, err
-}
-
-// askBundleSkills lets the user pick a bundle, resolves its skills, then shows a
-// confirmation multi-select so the user can tweak the suggestion before installing.
-func askBundleSkills(cfg *config.Config, reg *registry.Registry) (bundle string, skills []string, err error) {
-	err = newForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Select bundle").
-				Options(buildBundleOptions(cfg.Bundles)...).
-				Value(&bundle),
+			huh.NewMultiSelect[string]().
+				Title("Select bundles to install from").
+				Description("Space to select, Enter to confirm").
+				Height(10).
+				Options(opts...).
+				Value(&selected),
 		),
 	).Run()
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-
-	skills, err = resolveBundleSkills(cfg, bundle, reg)
-	if err != nil {
-		return "", nil, err
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no bundles selected")
 	}
-
-	skills, err = askBundleConfirmation(skills)
-	return bundle, skills, err
+	return selected, nil
 }
 
-// askBundleConfirmation shows only the bundle's skills as a multi-select.
-// The user can deselect individual skills before installing.
-func askBundleConfirmation(preSelected []string) ([]string, error) {
-	if len(preSelected) == 0 {
-		return nil, nil
+// pickSkillsPerBundle iterates over each selected bundle and prompts the user
+// to pick skills from it. Returns a map of bundleName → selected skill names.
+func pickSkillsPerBundle(cfg *config.Config, reg *registry.Registry, bundles []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(bundles))
+	for _, bundleName := range bundles {
+		var available []string
+		var err error
+
+		if bundleName == localBundleKey {
+			available = localBundleSkills(reg)
+		} else {
+			available, err = resolveBundleSkills(cfg, bundleName, reg)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if len(available) == 0 {
+			fmt.Println(dimStyle.Render(fmt.Sprintf("  No skills found in bundle %q — skipping", bundleName)))
+			continue
+		}
+
+		selected, err := pickSkillsFromList(bundleName, available)
+		if err != nil {
+			return nil, err
+		}
+		if len(selected) > 0 {
+			result[bundleName] = selected
+		}
+	}
+	return result, nil
+}
+
+// pickSkillsFromList shows a multi-select for the given bundle with all skills pre-selected.
+func pickSkillsFromList(bundleName string, skills []string) ([]string, error) {
+	title := fmt.Sprintf("Skills from %q", bundleName)
+	if bundleName == localBundleKey {
+		title = "Local registry skills"
 	}
 
-	opts := make([]huh.Option[string], 0, len(preSelected))
-	for _, name := range preSelected {
+	opts := make([]huh.Option[string], 0, len(skills))
+	for _, name := range skills {
 		opts = append(opts, huh.NewOption(name, name).Selected(true))
 	}
 
@@ -206,8 +221,8 @@ func askBundleConfirmation(preSelected []string) ([]string, error) {
 	err := newForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
-				Title("Confirm skills to install").
-				Description("Space to deselect, Enter to confirm.").
+				Title(title).
+				Description("Space to deselect, Enter to confirm").
 				Height(10).
 				Options(opts...).
 				Value(&selected),
@@ -217,20 +232,28 @@ func askBundleConfirmation(preSelected []string) ([]string, error) {
 	return selected, err
 }
 
-// buildBundleOptions converts bundle config into huh select options.
-func buildBundleOptions(bundles []config.Bundle) []huh.Option[string] {
-	opts := make([]huh.Option[string], 0, len(bundles))
-	for _, b := range bundles {
-		label := b.Name
-		if b.Company != "" {
-			label = fmt.Sprintf("%s (%s)", label, b.Company)
-		}
-		if b.Description != "" {
-			label = fmt.Sprintf("%s — %s", label, b.Description)
-		}
-		opts = append(opts, huh.NewOption(label, b.Name))
+// localBundleSkills returns the names of all skills in the local registry.
+func localBundleSkills(reg *registry.Registry) []string {
+	names := make([]string, 0, len(reg.Skills))
+	for _, s := range reg.Skills {
+		names = append(names, s.Name)
 	}
-	return opts
+	return names
+}
+
+// flattenSkills merges all skills from all bundles into a deduplicated slice.
+func flattenSkills(byBundle map[string][]string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, skills := range byBundle {
+		for _, name := range skills {
+			if !seen[name] {
+				seen[name] = true
+				result = append(result, name)
+			}
+		}
+	}
+	return result
 }
 
 // resolveBundleSkills returns the skill names for the given bundle.
@@ -408,15 +431,18 @@ func buildToolOptions(tools []config.Tool) (opts []huh.Option[string], preSelect
 	return opts, preSelected
 }
 
-// printSummary displays the installation summary before the confirmation prompt.
+// printSummary displays the installation summary grouped by bundle.
 func printSummary(result *WizardResult, scopeStr string) {
 	fmt.Println(headerStyle.Render("\n📋 Installation Summary"))
-	fmt.Printf("  Skills:  %s\n", strings.Join(result.SelectedSkills, ", "))
-	fmt.Printf("  Tools:   %s\n", strings.Join(result.SelectedTools, ", "))
-	fmt.Printf("  Scope:   %s\n", scopeStr)
-	if result.SelectedBundle != "" {
-		fmt.Printf("  Bundle:  %s\n", result.SelectedBundle)
+	for bundleName, skills := range result.SkillsByBundle {
+		label := bundleName
+		if bundleName == localBundleKey {
+			label = "local"
+		}
+		fmt.Printf("  [%s]  %s\n", dimStyle.Render(label), strings.Join(skills, ", "))
 	}
+	fmt.Printf("  Tools:  %s\n", strings.Join(result.SelectedTools, ", "))
+	fmt.Printf("  Scope:  %s\n", scopeStr)
 	fmt.Println()
 }
 
