@@ -72,7 +72,7 @@ func DefaultBundles() []Bundle {
 func DefaultTools() []Tool {
 	return []Tool{
 		{Name: "claude", GlobalPath: "~/.claude/skills", LocalPath: ".claude/skills", Enabled: true},
-		{Name: "copilot", GlobalPath: "~/.copilot/skills", LocalPath: ".copilot/skills", Enabled: true},
+		{Name: "copilot", GlobalPath: "~/.copilot/skills", LocalPath: ".github/skills", Enabled: true},
 		{Name: "codex", GlobalPath: "~/.codex/skills", LocalPath: ".codex/skills", Enabled: true},
 		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
 		{Name: "gemini", GlobalPath: "~/.gemini/skills", LocalPath: ".gemini/skills", Enabled: true},
