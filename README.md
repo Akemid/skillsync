@@ -1,6 +1,17 @@
+<div align="center">
+
 # skillsync ⚡
 
-**AI Agent Skills Sync** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
+---
+
+[![Go 1.26+](https://img.shields.io/badge/go-1.26+-00ADD8.svg)](https://go.dev/dl/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Agent Skills](https://img.shields.io/badge/standard-agentskills.io-blueviolet.svg)](https://agentskills.io/) [![Release](https://img.shields.io/github/v/release/Akemid/skillsync)](https://github.com/Akemid/skillsync/releases/latest) [![CI](https://github.com/Akemid/skillsync/actions/workflows/ci.yml/badge.svg)](https://github.com/Akemid/skillsync/actions/workflows/ci.yml)
+
+<img src="assets/logo.png" alt="skillsync logo" width="300"/>
+<br/><br/>
+
+**AI Agent Skills Installer** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
+
+</div>
 
 ## What it does
 
