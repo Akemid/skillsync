@@ -112,7 +112,7 @@ func run() error {
 	}
 
 	// Run interactive wizard
-	result, err := tui.RunWizard(cfg, reg, projectDir)
+	result, err := tui.RunWizard(cfg, reg, projectDir, configPath)
 	if err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func cmdRemoteAdd(cfg *config.Config, configPath string) error {
 		return fmt.Errorf("usage: skillsync remote add <name> <url> [--branch <branch>] [--path <path>] [--company <company>]")
 	}
 	name := os.Args[3]
-	url := os.Args[4]
+	gitURL := os.Args[4]
 	branch := "main"
 	path := ""
 	company := ""
@@ -336,7 +336,7 @@ func cmdRemoteAdd(cfg *config.Config, configPath string) error {
 		Company: company,
 		Source: &config.Source{
 			Type:   "git",
-			URL:    url,
+			URL:    gitURL,
 			Branch: branch,
 			Path:   path,
 		},

@@ -61,7 +61,7 @@ func newForm(groups ...*huh.Group) *huh.Form {
 }
 
 // RunWizard orchestrates the interactive TUI wizard step by step.
-func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*WizardResult, error) {
+func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir, configPath string) (*WizardResult, error) {
 	fmt.Println(titleStyle.Render(banner))
 	fmt.Println(dimStyle.Render("  Synchronize skills across your agentic coding tools\n"))
 
@@ -71,7 +71,7 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir string) (*
 	}
 
 	if mode == "add-remote" {
-		return nil, runAddRemoteWizard(cfg)
+		return nil, runAddRemoteWizard(cfg, configPath)
 	}
 
 	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
@@ -140,7 +140,7 @@ func askWizardMode() (string, error) {
 
 // runAddRemoteWizard guides the user through adding a new remote bundle to the config.
 // It writes the bundle to the config file and offers to sync it immediately.
-func runAddRemoteWizard(cfg *config.Config) error {
+func runAddRemoteWizard(cfg *config.Config, configPath string) error {
 	var name, url, branch, path, company string
 	branch = "main"
 
@@ -191,7 +191,7 @@ func runAddRemoteWizard(cfg *config.Config) error {
 
 	cfg.Bundles = append(cfg.Bundles, bundle)
 
-	configPath := config.DefaultConfigPath()
+
 	fmt.Println(dimStyle.Render("\n  ⚠  This will overwrite your config file (comments and custom formatting will be lost)."))
 
 	var confirmed bool
