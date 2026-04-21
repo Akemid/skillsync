@@ -38,11 +38,24 @@ All tools following the [Agent Skills](https://agentskills.io/) open standard:
 
 ## Installation
 
-```bash
-# Build from source
-go build -o skillsync ./cmd/skillsync
+### macOS / Linux
 
-# Move to PATH
+```sh
+curl -fsSL https://raw.githubusercontent.com/Akemid/skillsync/main/install.sh | sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/Akemid/skillsync/main/install.ps1 | iex
+```
+
+> **Note for Windows users**: `skillsync` uses symlinks. Enable Developer Mode in Settings → Privacy & Security → For developers, or run as Administrator.
+
+### Build from source
+
+```bash
+go build -o skillsync ./cmd/skillsync
 mv skillsync /usr/local/bin/
 ```
 
