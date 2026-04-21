@@ -191,7 +191,6 @@ func runAddRemoteWizard(cfg *config.Config, configPath string) error {
 
 	cfg.Bundles = append(cfg.Bundles, bundle)
 
-
 	fmt.Println(dimStyle.Render("\n  ⚠  This will overwrite your config file (comments and custom formatting will be lost)."))
 
 	var confirmed bool
