@@ -9,7 +9,7 @@
 <img src="assets/logo.png" alt="skillsync logo" width="300"/>
 <br/><br/>
 
-**AI Agent Skills Installer** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
+**AI Agent Skills Sync** — Synchronize [Agent Skills](https://agentskills.io/) across all your agentic coding tools.
 
 </div>
 
