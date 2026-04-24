@@ -76,6 +76,9 @@ mv skillsync /usr/local/bin/
 # 1. Generate default config
 skillsync init
 
+# If config already exists and you only want migration-safe updates
+skillsync upgrade-config
+
 # 2. Edit config with your bundles
 $EDITOR ~/.config/skillsync/skillsync.yaml
 
@@ -86,13 +89,14 @@ skillsync
 ## Usage
 
 ```
-skillsync              Run interactive TUI wizard
-skillsync list         List all skills in registry
-skillsync status       Show installed skills per tool
-skillsync sync         Fetch/update remote bundles from Git
-skillsync uninstall    Remove a skill's symlinks
-skillsync init         Generate default config
-skillsync help         Show help
+skillsync                 Run interactive TUI wizard
+skillsync list            List all skills in registry
+skillsync status          Show installed skills per tool
+skillsync sync            Fetch/update remote bundles from Git
+skillsync uninstall       Remove a skill's symlinks
+skillsync init            Generate default config
+skillsync upgrade-config  Migrate existing config without destructive overwrite
+skillsync help            Show help
 ```
 
 ### Interactive Wizard

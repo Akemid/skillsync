@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestConfigLoad_WithSource verifies loading bundle with Git source
@@ -307,6 +310,132 @@ tools:
 			t.Fatalf("InstallMode = %q, want empty string", cfg.Tools[0].InstallMode)
 		}
 	})
+}
+
+func TestMigrateTools_LegacyKiroMigratesWithInheritedPaths(t *testing.T) {
+	existing := []Tool{
+		{Name: "claude", GlobalPath: "~/.claude/skills", LocalPath: ".claude/skills", Enabled: true},
+		{Name: "kiro", GlobalPath: "~/.kiro/custom", LocalPath: ".kiro/custom", Enabled: true},
+	}
+
+	migrated, summary := MigrateTools(existing)
+
+	if !summary.MigratedLegacy {
+		t.Fatal("expected summary.MigratedLegacy to be true")
+	}
+	if !summary.Changed || summary.Unchanged {
+		t.Fatal("expected changed migration summary")
+	}
+
+	var hasLegacy bool
+	var hasIDE bool
+	var hasCLI bool
+
+	for _, tool := range migrated {
+		switch tool.Name {
+		case "kiro":
+			hasLegacy = true
+		case "kiro-ide":
+			hasIDE = true
+			if tool.GlobalPath != "~/.kiro/custom" || tool.LocalPath != ".kiro/custom" {
+				t.Fatalf("kiro-ide paths not inherited: got (%s, %s)", tool.GlobalPath, tool.LocalPath)
+			}
+			if tool.InstallMode != "copy" || !tool.Enabled {
+				t.Fatalf("kiro-ide shape invalid: mode=%q enabled=%v", tool.InstallMode, tool.Enabled)
+			}
+		case "kiro-cli":
+			hasCLI = true
+			if tool.GlobalPath != "~/.kiro/custom" || tool.LocalPath != ".kiro/custom" {
+				t.Fatalf("kiro-cli paths not inherited: got (%s, %s)", tool.GlobalPath, tool.LocalPath)
+			}
+			if tool.InstallMode != "symlink" || tool.Enabled {
+				t.Fatalf("kiro-cli shape invalid: mode=%q enabled=%v", tool.InstallMode, tool.Enabled)
+			}
+		}
+	}
+
+	if hasLegacy {
+		t.Fatal("legacy kiro should be removed after migration")
+	}
+	if !hasIDE || !hasCLI {
+		t.Fatal("expected both kiro-ide and kiro-cli after migration")
+	}
+}
+
+func TestMigrateTools_PreservesCustomAndNoDuplicateSplitEntries(t *testing.T) {
+	existing := []Tool{
+		{Name: "custom-tool", GlobalPath: "~/.custom/skills", LocalPath: ".custom/skills", Enabled: true},
+		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
+		{Name: "kiro-ide", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true, InstallMode: "copy"},
+		{Name: "kiro-cli", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: false, InstallMode: "symlink"},
+	}
+
+	migrated, summary := MigrateTools(existing)
+
+	if !summary.MigratedLegacy {
+		t.Fatal("expected legacy migration flag")
+	}
+	if len(summary.AddedTools) != 0 {
+		t.Fatalf("expected no added tools when split entries already exist, got %v", summary.AddedTools)
+	}
+
+	var customCount, ideCount, cliCount int
+	for _, tool := range migrated {
+		switch tool.Name {
+		case "custom-tool":
+			customCount++
+		case "kiro-ide":
+			ideCount++
+		case "kiro-cli":
+			cliCount++
+		}
+	}
+
+	if customCount != 1 || ideCount != 1 || cliCount != 1 {
+		t.Fatalf("unexpected tool counts custom=%d ide=%d cli=%d", customCount, ideCount, cliCount)
+	}
+}
+
+func TestMigrateTools_Idempotent(t *testing.T) {
+	existing := []Tool{
+		{Name: "claude", GlobalPath: "~/.claude/skills", LocalPath: ".claude/skills", Enabled: true},
+		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
+	}
+
+	first, firstSummary := MigrateTools(existing)
+	second, secondSummary := MigrateTools(first)
+
+	if !firstSummary.Changed {
+		t.Fatal("first migration should report changes")
+	}
+	if !secondSummary.Unchanged {
+		t.Fatal("second migration should be unchanged")
+	}
+
+	firstYAML, err := yaml.Marshal(first)
+	if err != nil {
+		t.Fatalf("yaml marshal first: %v", err)
+	}
+	secondYAML, err := yaml.Marshal(second)
+	if err != nil {
+		t.Fatalf("yaml marshal second: %v", err)
+	}
+	if string(firstYAML) != string(secondYAML) {
+		t.Fatal("migrated tools are not byte-equivalent across repeated runs")
+	}
+}
+
+func TestMigrateTools_DoesNotMutateInput(t *testing.T) {
+	existing := []Tool{
+		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
+	}
+	before := append([]Tool(nil), existing...)
+
+	_, _ = MigrateTools(existing)
+
+	if !reflect.DeepEqual(existing, before) {
+		t.Fatal("MigrateTools should not mutate input slice")
+	}
 }
 
 // Helper function to check if string contains substring

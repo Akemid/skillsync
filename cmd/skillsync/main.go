@@ -95,6 +95,8 @@ func run() error {
 			return cmdStatus(cfg, reg)
 		case "sync":
 			return cmdSync(cfg)
+		case "upgrade-config":
+			return cmdUpgradeConfig(configPath)
 		case "remote":
 			return cmdRemote(cfg, configPath)
 		case "uninstall":
@@ -351,6 +353,12 @@ func cmdRemoteAdd(cfg *config.Config, configPath string) error {
 }
 
 func cmdInit(cfg *config.Config, configPath string) error {
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Fprintf(os.Stderr, "Warning: config already exists at %s; use `skillsync upgrade-config` to migrate without overwriting\n", configPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking config path: %w", err)
+	}
+
 	if err := config.Save(cfg, configPath); err != nil {
 		return err
 	}
@@ -358,19 +366,51 @@ func cmdInit(cfg *config.Config, configPath string) error {
 	return nil
 }
 
+func cmdUpgradeConfig(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no config found at %s; run `skillsync init` first", configPath)
+		}
+		return fmt.Errorf("loading config from %s: %w", configPath, err)
+	}
+
+	migratedTools, summary := config.MigrateTools(cfg.Tools)
+	cfg.Tools = migratedTools
+
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("saving upgraded config: %w", err)
+	}
+
+	fmt.Printf("Config upgraded at %s\n", configPath)
+	if summary.MigratedLegacy {
+		fmt.Println("- migrated legacy tool: kiro -> kiro-ide + kiro-cli")
+	}
+	if len(summary.AddedTools) > 0 {
+		fmt.Printf("- added tools: %v\n", summary.AddedTools)
+	}
+	if summary.Unchanged {
+		fmt.Println("- no changes required")
+	}
+	fmt.Println("- preserved bundles and registry_path")
+
+	return nil
+}
+
 func printUsage() {
 	fmt.Println(`skillsync — AI Agent Skills Installer
 
 Usage:
-  skillsync              Run interactive wizard (install or add remote)
-  skillsync list         List skills in registry
-  skillsync status       Show installed skills per tool
-  skillsync sync         Fetch/update remote bundles from Git
-  skillsync remote list  List configured remote bundles
-  skillsync remote add   Add a remote bundle to config
-  skillsync uninstall    Remove a skill symlink
-  skillsync init         Generate default config file
-  skillsync help         Show this help
+  skillsync              	Run interactive wizard (install or add remote)
+  skillsync list         	List skills in registry
+  skillsync status       	Show installed skills per tool
+  skillsync sync         	Fetch/update remote bundles from Git
+  skillsync upgrade-config 	Migrate existing config safely
+  skillsync remote list  	List configured remote bundles
+  skillsync remote add  	Add a remote bundle to config
+  skillsync uninstall   	Remove a skill symlink
+  skillsync init        	Generate default config file
+  skillsync help        	Show this help
 
 Flags:
   --config <path>        Use custom config file
