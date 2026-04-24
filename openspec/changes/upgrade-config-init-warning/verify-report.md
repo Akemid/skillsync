@@ -20,10 +20,10 @@
 
 **Build**: ✅ Passed (compilation validated through `go test` in Go toolchain)
 
-**Tests**: ✅ 94 passed / ❌ 0 failed / ⚠️ 0 skipped  
+**Tests**: ✅ 96 passed / ❌ 0 failed / ⚠️ 0 skipped  
 Command evidence:
 - `go test ./...` → pass
-- `go test ./internal/config ./cmd/skillsync` → pass
+- `go test ./cmd/skillsync ./internal/config ./...` → pass
 
 **Coverage**: ➖ Not available from current runner output (coverage summary not emitted)
 
@@ -41,11 +41,11 @@ Command evidence:
 | REQ-3 | registry_path is preserved | `cmd/skillsync/main_test.go > TestCmdUpgradeConfig_MigratesLegacyKiro` | ✅ COMPLIANT |
 | REQ-4 | legacy kiro entry is replaced | `internal/config/config_test.go > TestMigrateTools_LegacyKiroMigratesWithInheritedPaths` | ✅ COMPLIANT |
 | REQ-4 | kiro-ide already present is not duplicated | `internal/config/config_test.go > TestMigrateTools_PreservesCustomAndNoDuplicateSplitEntries` | ✅ COMPLIANT |
-| REQ-5 | idempotent on already-migrated config | `internal/config/config_test.go > TestMigrateTools_Idempotent` | ⚠️ PARTIAL |
+| REQ-5 | idempotent on already-migrated config | `cmd/skillsync/main_test.go > TestCmdUpgradeConfig_IdempotentAcrossTwoRuns` | ✅ COMPLIANT |
 | REQ-6 | summary lists each migration | `cmd/skillsync/main_test.go > TestCmdUpgradeConfig_MigratesLegacyKiro` | ✅ COMPLIANT |
-| REQ-6 | summary indicates no changes when already current | `internal/config/config_test.go > TestMigrateTools_Idempotent` | ⚠️ PARTIAL |
+| REQ-6 | summary indicates no changes when already current | `cmd/skillsync/main_test.go > TestCmdUpgradeConfig_AlreadyCurrentShowsNoChanges` | ✅ COMPLIANT |
 
-**Compliance summary**: 9/11 escenarios compliant, 2 partial.
+**Compliance summary**: 11/11 escenarios compliant.
 
 ---
 
@@ -57,8 +57,8 @@ Command evidence:
 | REQ-2 | ✅ Implemented | `run()` rutea `upgrade-config`; `cmdUpgradeConfig` carga, migra, guarda y maneja missing config. |
 | REQ-3 | ✅ Implemented | `MigrateTools` preserva entries desconocidas; `cmdUpgradeConfig` no toca bundles ni `registry_path`. |
 | REQ-4 | ✅ Implemented | Legacy `kiro` migra a `kiro-ide`/`kiro-cli` con paths heredados. |
-| REQ-5 | ⚠️ Partial | Idempotencia validada a nivel `MigrateTools`; falta evidencia de segundo run de CLI + salida "no changes required". |
-| REQ-6 | ⚠️ Partial | Se verifica summary de migración; falta test explícito del summary en estado sin cambios. |
+| REQ-5 | ✅ Implemented | Validado con test de doble ejecución de `cmdUpgradeConfig` y comparación de contenido de archivo. |
+| REQ-6 | ✅ Implemented | Validado summary de migración y summary "no changes required" en estado ya migrado. |
 
 ---
 
@@ -80,8 +80,7 @@ Command evidence:
 - None.
 
 **WARNING** (should fix):
-- Falta test de CLI para el caso "already current" que valide salida `- no changes required` (REQ-6 escenario 2).
-- Falta test E2E de idempotencia en comando (`cmdUpgradeConfig` ejecutado dos veces sobre mismo archivo) para cerrar REQ-5 al 100%.
+- None.
 
 **SUGGESTION** (nice to have):
 - Agregar test table-driven para variaciones de legacy `kiro` (paths vacíos o custom combinados con split parcial).
@@ -90,4 +89,4 @@ Command evidence:
 
 ### Final Gate
 
-**Status**: ⚠️ Pass with warnings (implementación correcta; recomendado cerrar los 2 gaps de tests antes de archive).
+**Status**: ✅ Pass (archive-ready).

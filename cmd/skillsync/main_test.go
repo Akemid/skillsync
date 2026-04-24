@@ -260,3 +260,82 @@ tools:
 		t.Fatal("expected custom tool to be preserved")
 	}
 }
+
+func TestCmdUpgradeConfig_AlreadyCurrentShowsNoChanges(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "skillsync.yaml")
+	configYAML := `registry_path: "~/.agents/skills"
+tools:
+  - name: "kiro-ide"
+    global_path: "~/.kiro/skills"
+    local_path: ".kiro/skills"
+    enabled: true
+    install_mode: "copy"
+  - name: "kiro-cli"
+    global_path: "~/.kiro/skills"
+    local_path: ".kiro/skills"
+    enabled: false
+    install_mode: "symlink"
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	stdout, _, err := captureOutput(t, func() error {
+		return cmdUpgradeConfig(configPath)
+	})
+	if err != nil {
+		t.Fatalf("cmdUpgradeConfig() error = %v, want nil", err)
+	}
+
+	if !strings.Contains(stdout, "- no changes required") {
+		t.Fatalf("expected no-changes summary line, got: %q", stdout)
+	}
+}
+
+func TestCmdUpgradeConfig_IdempotentAcrossTwoRuns(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "skillsync.yaml")
+	configYAML := `registry_path: "~/.agents/skills"
+tools:
+  - name: "kiro"
+    global_path: "~/.kiro/custom"
+    local_path: ".kiro/custom"
+    enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	firstStdout, _, err := captureOutput(t, func() error {
+		return cmdUpgradeConfig(configPath)
+	})
+	if err != nil {
+		t.Fatalf("first cmdUpgradeConfig() error = %v, want nil", err)
+	}
+
+	firstContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after first run: %v", err)
+	}
+
+	secondStdout, _, err := captureOutput(t, func() error {
+		return cmdUpgradeConfig(configPath)
+	})
+	if err != nil {
+		t.Fatalf("second cmdUpgradeConfig() error = %v, want nil", err)
+	}
+
+	secondContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after second run: %v", err)
+	}
+
+	if string(firstContent) != string(secondContent) {
+		t.Fatal("config content changed across repeated upgrade-config runs")
+	}
+	if !strings.Contains(firstStdout, "migrated legacy tool: kiro") {
+		t.Fatalf("expected migration on first run, got: %q", firstStdout)
+	}
+	if !strings.Contains(secondStdout, "- no changes required") {
+		t.Fatalf("expected no-changes summary on second run, got: %q", secondStdout)
+	}
+}
