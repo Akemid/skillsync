@@ -11,10 +11,16 @@ import (
 
 // Tool represents a supported agentic coding tool
 type Tool struct {
-	Name       string `yaml:"name"`
-	GlobalPath string `yaml:"global_path"` // e.g. ~/.claude/skills
-	LocalPath  string `yaml:"local_path"`  // e.g. .claude/skills
-	Enabled    bool   `yaml:"enabled"`
+	Name        string `yaml:"name"`
+	GlobalPath  string `yaml:"global_path"` // e.g. ~/.claude/skills
+	LocalPath   string `yaml:"local_path"`  // e.g. .claude/skills
+	Enabled     bool   `yaml:"enabled"`
+	InstallMode string `yaml:"install_mode,omitempty"` // "copy" or "symlink" (default)
+}
+
+// IsCopyMode returns true when the tool uses file copy instead of symlinks
+func (t Tool) IsCopyMode() bool {
+	return t.InstallMode == "copy"
 }
 
 // SkillRef references a skill in the registry with optional overrides
@@ -49,6 +55,15 @@ type Config struct {
 	Tools        []Tool   `yaml:"tools"`
 }
 
+// MigrationSummary reports what changed during upgrade-config.
+type MigrationSummary struct {
+	Changed        bool
+	MigratedLegacy bool
+	AddedTools     []string
+	PreservedTools []string
+	Unchanged      bool
+}
+
 // DefaultBundles returns the pre-configured list of well-known remote bundles.
 // These are included when running `skillsync init` so users don't need to know the URLs.
 func DefaultBundles() []Bundle {
@@ -74,7 +89,8 @@ func DefaultTools() []Tool {
 		{Name: "claude", GlobalPath: "~/.claude/skills", LocalPath: ".claude/skills", Enabled: true},
 		{Name: "copilot", GlobalPath: "~/.copilot/skills", LocalPath: ".github/skills", Enabled: true},
 		{Name: "codex", GlobalPath: "~/.codex/skills", LocalPath: ".codex/skills", Enabled: true},
-		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
+		{Name: "kiro-ide", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true, InstallMode: "copy"},
+		{Name: "kiro-cli", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: false, InstallMode: "symlink"},
 		{Name: "gemini", GlobalPath: "~/.gemini/skills", LocalPath: ".gemini/skills", Enabled: true},
 		{Name: "cursor", GlobalPath: "~/.cursor/skills", LocalPath: ".cursor/skills", Enabled: false},
 		{Name: "roo-code", GlobalPath: "~/.roo-code/skills", LocalPath: ".roo-code/skills", Enabled: false},
@@ -160,4 +176,64 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// MigrateTools applies non-destructive migration rules to existing tool entries.
+// It preserves unknown tools, migrates legacy "kiro" entries, and avoids duplicates.
+func MigrateTools(existing []Tool) ([]Tool, MigrationSummary) {
+	migrated := make([]Tool, 0, len(existing)+2)
+	summary := MigrationSummary{}
+
+	var legacyKiro *Tool
+	hasKiroIDE := false
+	hasKiroCLI := false
+
+	for i := range existing {
+		tool := existing[i]
+		switch tool.Name {
+		case "kiro":
+			if legacyKiro == nil {
+				copy := tool
+				legacyKiro = &copy
+			}
+			summary.MigratedLegacy = true
+			summary.Changed = true
+			continue
+		case "kiro-ide":
+			hasKiroIDE = true
+		case "kiro-cli":
+			hasKiroCLI = true
+		}
+		migrated = append(migrated, tool)
+		summary.PreservedTools = append(summary.PreservedTools, tool.Name)
+	}
+
+	if summary.MigratedLegacy {
+		if !hasKiroIDE {
+			migrated = append(migrated, Tool{
+				Name:        "kiro-ide",
+				GlobalPath:  legacyKiro.GlobalPath,
+				LocalPath:   legacyKiro.LocalPath,
+				Enabled:     true,
+				InstallMode: "copy",
+			})
+			summary.AddedTools = append(summary.AddedTools, "kiro-ide")
+			summary.Changed = true
+		}
+
+		if !hasKiroCLI {
+			migrated = append(migrated, Tool{
+				Name:        "kiro-cli",
+				GlobalPath:  legacyKiro.GlobalPath,
+				LocalPath:   legacyKiro.LocalPath,
+				Enabled:     false,
+				InstallMode: "symlink",
+			})
+			summary.AddedTools = append(summary.AddedTools, "kiro-cli")
+			summary.Changed = true
+		}
+	}
+
+	summary.Unchanged = !summary.Changed
+	return migrated, summary
 }
