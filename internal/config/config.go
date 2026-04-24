@@ -11,10 +11,16 @@ import (
 
 // Tool represents a supported agentic coding tool
 type Tool struct {
-	Name       string `yaml:"name"`
-	GlobalPath string `yaml:"global_path"` // e.g. ~/.claude/skills
-	LocalPath  string `yaml:"local_path"`  // e.g. .claude/skills
-	Enabled    bool   `yaml:"enabled"`
+	Name        string `yaml:"name"`
+	GlobalPath  string `yaml:"global_path"`           // e.g. ~/.claude/skills
+	LocalPath   string `yaml:"local_path"`            // e.g. .claude/skills
+	Enabled     bool   `yaml:"enabled"`
+	InstallMode string `yaml:"install_mode,omitempty"` // "copy" or "symlink" (default)
+}
+
+// IsCopyMode returns true when the tool uses file copy instead of symlinks
+func (t Tool) IsCopyMode() bool {
+	return t.InstallMode == "copy"
 }
 
 // SkillRef references a skill in the registry with optional overrides
@@ -74,7 +80,8 @@ func DefaultTools() []Tool {
 		{Name: "claude", GlobalPath: "~/.claude/skills", LocalPath: ".claude/skills", Enabled: true},
 		{Name: "copilot", GlobalPath: "~/.copilot/skills", LocalPath: ".github/skills", Enabled: true},
 		{Name: "codex", GlobalPath: "~/.codex/skills", LocalPath: ".codex/skills", Enabled: true},
-		{Name: "kiro", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true},
+		{Name: "kiro-ide", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: true, InstallMode: "copy"},
+		{Name: "kiro-cli", GlobalPath: "~/.kiro/skills", LocalPath: ".kiro/skills", Enabled: false, InstallMode: "symlink"},
 		{Name: "gemini", GlobalPath: "~/.gemini/skills", LocalPath: ".gemini/skills", Enabled: true},
 		{Name: "cursor", GlobalPath: "~/.cursor/skills", LocalPath: ".cursor/skills", Enabled: false},
 		{Name: "roo-code", GlobalPath: "~/.roo-code/skills", LocalPath: ".roo-code/skills", Enabled: false},

@@ -610,12 +610,17 @@ func PrintResults(results []installer.Result) {
 func DetectInstalledTools(tools []config.Tool) []config.Tool {
 	updated := make([]config.Tool, len(tools))
 	copy(updated, tools)
+	seen := make(map[string]bool)
 
 	for i := range updated {
 		globalPath := config.ExpandPath(updated[i].GlobalPath)
+		if seen[globalPath] {
+			continue
+		}
 		parentDir := strings.TrimSuffix(globalPath, "/skills")
 		if _, err := os.Stat(parentDir); err == nil {
 			updated[i].Enabled = true
+			seen[globalPath] = true
 		}
 	}
 

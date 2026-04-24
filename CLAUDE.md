@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## SDD Preferences
+
+- **Project name**: `skillsync` (official). Also findable in engram as `uniqueskills` (working dir name).
+- **Execution mode**: interactive — pause after each phase, show summary, confirm before next.
+- **Artifact store**: hybrid (engram + openspec files).
+
 ## Project Overview
 
 **skillsync** is a Go CLI tool that manages Agent Skills across multiple agentic coding tools (Claude Code, Copilot, Cursor, etc.) by creating symlinks from a central registry (`~/.agents/skills/`) to each tool's skill directory. It follows the [Agent Skills](https://agentskills.io/) open standard.

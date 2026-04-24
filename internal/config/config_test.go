@@ -193,6 +193,122 @@ bundles:
 	}
 }
 
+func TestToolIsCopyMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "copy mode", mode: "copy", want: true},
+		{name: "empty mode defaults to symlink", mode: "", want: false},
+		{name: "explicit symlink mode", mode: "symlink", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := Tool{InstallMode: tt.mode}
+			if got := tool.IsCopyMode(); got != tt.want {
+				t.Fatalf("Tool.IsCopyMode() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultTools_KiroEntries(t *testing.T) {
+	tools := DefaultTools()
+
+	var hasKiroIDE bool
+	var hasKiroCLI bool
+	var hasLegacyKiro bool
+
+	for _, tool := range tools {
+		switch tool.Name {
+		case "kiro-ide":
+			hasKiroIDE = true
+			if tool.InstallMode != "copy" {
+				t.Fatalf("kiro-ide InstallMode = %q, want %q", tool.InstallMode, "copy")
+			}
+			if !tool.Enabled {
+				t.Fatalf("kiro-ide Enabled = %v, want true", tool.Enabled)
+			}
+		case "kiro-cli":
+			hasKiroCLI = true
+			if tool.InstallMode == "copy" {
+				t.Fatalf("kiro-cli InstallMode = %q, want non-copy mode", tool.InstallMode)
+			}
+		case "kiro":
+			hasLegacyKiro = true
+		}
+	}
+
+	if !hasKiroIDE {
+		t.Fatal("DefaultTools() missing kiro-ide entry")
+	}
+	if !hasKiroCLI {
+		t.Fatal("DefaultTools() missing kiro-cli entry")
+	}
+	if hasLegacyKiro {
+		t.Fatal("DefaultTools() should not include legacy kiro entry")
+	}
+}
+
+func TestLoad_InstallModeRoundTrip(t *testing.T) {
+	t.Run("yaml with install_mode copy persists", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config-copy.yaml")
+
+		configYAML := `registry_path: "~/.agents/skills"
+tools:
+  - name: "kiro-ide"
+    global_path: "~/.kiro/skills"
+    local_path: ".kiro/skills"
+    enabled: true
+    install_mode: "copy"
+`
+		if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v, want nil", err)
+		}
+		if len(cfg.Tools) != 1 {
+			t.Fatalf("len(cfg.Tools) = %d, want 1", len(cfg.Tools))
+		}
+		if cfg.Tools[0].InstallMode != "copy" {
+			t.Fatalf("InstallMode = %q, want %q", cfg.Tools[0].InstallMode, "copy")
+		}
+	})
+
+	t.Run("yaml without install_mode keeps empty value", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config-empty.yaml")
+
+		configYAML := `registry_path: "~/.agents/skills"
+tools:
+  - name: "kiro"
+    global_path: "~/.kiro/skills"
+    local_path: ".kiro/skills"
+    enabled: true
+`
+		if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v, want nil", err)
+		}
+		if len(cfg.Tools) != 1 {
+			t.Fatalf("len(cfg.Tools) = %d, want 1", len(cfg.Tools))
+		}
+		if cfg.Tools[0].InstallMode != "" {
+			t.Fatalf("InstallMode = %q, want empty string", cfg.Tools[0].InstallMode)
+		}
+	})
+}
+
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

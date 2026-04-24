@@ -442,4 +442,26 @@ func TestDetectInstalledTools(t *testing.T) {
 			t.Error("pre-enabled tool should remain Enabled = true")
 		}
 	})
+
+	t.Run("enables only first tool for shared global path", func(t *testing.T) {
+		toolDir := t.TempDir()
+		skillsDir := filepath.Join(toolDir, "skills")
+		if err := os.MkdirAll(skillsDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+
+		tools := []config.Tool{
+			{Name: "kiro-ide", GlobalPath: skillsDir, Enabled: false},
+			{Name: "kiro-cli", GlobalPath: skillsDir, Enabled: false},
+		}
+
+		result := DetectInstalledTools(tools)
+
+		if !result[0].Enabled {
+			t.Fatalf("expected first shared-path tool to be Enabled = true")
+		}
+		if result[1].Enabled {
+			t.Fatalf("expected second shared-path tool to remain disabled")
+		}
+	})
 }
