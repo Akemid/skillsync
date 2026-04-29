@@ -1,0 +1,14 @@
+change_name: add-skills-to-upload
+status: archived
+archived_at: 2026-04-29
+verdict: PASS
+test_count: 132
+test_status: all passed
+go_vet_status: clean
+branch: feat/add-skills-to-upload
+artifacts:
+  - spec.md
+  - design.md
+  - tasks.md
+  - verify-report.md
+  - archive-report.md

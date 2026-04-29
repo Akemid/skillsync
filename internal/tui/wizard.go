@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Akemid/skillsync/internal/archive"
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/detector"
 	"github.com/Akemid/skillsync/internal/installer"
 	"github.com/Akemid/skillsync/internal/registry"
 	skillsync "github.com/Akemid/skillsync/internal/sync"
+	"github.com/Akemid/skillsync/internal/tap"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -70,8 +72,15 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir, configPat
 		return nil, err
 	}
 
-	if mode == "add-remote" {
+	switch mode {
+	case "add-remote":
 		return nil, runAddRemoteWizard(cfg, configPath)
+	case "share-skill":
+		return nil, runShareSkillWizard(cfg, reg, configPath)
+	case "export-skill":
+		return nil, runExportWizard(reg)
+	case "import-skill":
+		return nil, runImportWizard(cfg)
 	}
 
 	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
@@ -131,6 +140,9 @@ func askWizardMode() (string, error) {
 				Options(
 					huh.NewOption("Install skills", "install"),
 					huh.NewOption("Add remote repository", "add-remote"),
+					huh.NewOption("Share a skill (tap)", "share-skill"),
+					huh.NewOption("Export skill to archive", "export-skill"),
+					huh.NewOption("Import skill from archive", "import-skill"),
 				).
 				Value(&mode),
 		),
@@ -233,6 +245,272 @@ func runAddRemoteWizard(cfg *config.Config, configPath string) error {
 		fmt.Println(dimStyle.Render(fmt.Sprintf("  Run `skillsync sync` to fetch %q later.", name)))
 	}
 
+	return nil
+}
+
+// runShareSkillWizard guides the user through uploading a skill to a registered tap.
+// If no taps are registered, it prompts to register one inline.
+func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath string) error {
+	// If no taps, prompt to register one first
+	if len(cfg.Taps) == 0 {
+		fmt.Println(dimStyle.Render("  No taps registered. Let's add one first.\n"))
+
+		var tapName, tapURL, tapBranch string
+		tapBranch = "main"
+
+		err := newForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Tap name").
+					Description("Short identifier (e.g. my-skills)").
+					Value(&tapName),
+				huh.NewInput().
+					Title("Git URL").
+					Description("HTTPS or SSH clone URL of a writable repository").
+					Value(&tapURL),
+				huh.NewInput().
+					Title("Branch (default: main)").
+					Value(&tapBranch),
+			),
+		).Run()
+		if err != nil {
+			return err
+		}
+		if tapName == "" || tapURL == "" {
+			return fmt.Errorf("tap name and URL are required")
+		}
+
+		cfg.Taps = append(cfg.Taps, config.Tap{Name: tapName, URL: tapURL, Branch: tapBranch})
+		if err := config.Save(cfg, configPath); err != nil {
+			return fmt.Errorf("saving config: %w", err)
+		}
+		fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ Tap %q registered", tapName)))
+	}
+
+	// Build skill options (local only)
+	localSkills := localBundleSkills(reg)
+	if len(localSkills) == 0 {
+		return fmt.Errorf("no local skills available to share")
+	}
+
+	// Build tap options
+	tapOpts := make([]huh.Option[string], 0, len(cfg.Taps))
+	for _, t := range cfg.Taps {
+		tapOpts = append(tapOpts, huh.NewOption(fmt.Sprintf("%s (%s)", t.Name, t.URL), t.Name))
+	}
+
+	skillOpts := make([]huh.Option[string], 0, len(localSkills))
+	for _, s := range localSkills {
+		skillOpts = append(skillOpts, huh.NewOption(s, s))
+	}
+
+	var selectedSkill, selectedTap string
+	force := false
+
+	err := newForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select skill to share").
+				Options(skillOpts...).
+				Value(&selectedSkill),
+			huh.NewSelect[string]().
+				Title("Select tap to upload to").
+				Options(tapOpts...).
+				Value(&selectedTap),
+			huh.NewConfirm().
+				Title("Overwrite if skill already exists in tap?").
+				Value(&force),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	// Find skill path
+	var skillPath string
+	for _, s := range reg.Skills {
+		if s.Name == selectedSkill {
+			skillPath = s.Path
+			break
+		}
+	}
+	if skillPath == "" {
+		return fmt.Errorf("skill %q not found in registry", selectedSkill)
+	}
+
+	// Find tap
+	var foundTap config.Tap
+	for _, t := range cfg.Taps {
+		if t.Name == selectedTap {
+			foundTap = t
+			break
+		}
+	}
+
+	tapper, err := tap.New(cfg.RegistryPath)
+	if err != nil {
+		return fmt.Errorf("initializing tapper: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := tapper.Upload(ctx, foundTap, skillPath, selectedSkill, force); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	fmt.Println(successStyle.Render(fmt.Sprintf("\n  ✓ Skill %q uploaded to tap %q", selectedSkill, selectedTap)))
+	fmt.Println(dimStyle.Render("  Others can install it with:"))
+	fmt.Printf("    skillsync remote add %s %s\n", selectedTap, foundTap.URL)
+	fmt.Printf("    skillsync sync\n")
+	return nil
+}
+
+// runExportWizard guides the user through exporting a local skill to a .tar.gz archive.
+func runExportWizard(reg *registry.Registry) error {
+	localSkills := localBundleSkills(reg)
+	if len(localSkills) == 0 {
+		return fmt.Errorf("no local skills available to export")
+	}
+
+	skillOpts := make([]huh.Option[string], 0, len(localSkills))
+	for _, s := range localSkills {
+		skillOpts = append(skillOpts, huh.NewOption(s, s))
+	}
+
+	var selectedSkill, outputPath string
+
+	err := newForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select skill to export").
+				Options(skillOpts...).
+				Value(&selectedSkill),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	outputPath = selectedSkill + ".tar.gz"
+
+	err = newForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Output path").
+				Description("Path for the .tar.gz archive").
+				Value(&outputPath),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	// Find skill path
+	var skillPath string
+	for _, s := range reg.Skills {
+		if s.Name == selectedSkill {
+			skillPath = s.Path
+			break
+		}
+	}
+	if skillPath == "" {
+		return fmt.Errorf("skill %q not found in registry", selectedSkill)
+	}
+
+	if err := archive.Export(skillPath, outputPath); err != nil {
+		return fmt.Errorf("export failed: %w", err)
+	}
+
+	info, _ := os.Stat(outputPath)
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
+	fmt.Println(successStyle.Render(fmt.Sprintf("\n  ✓ Exported %q → %s (%d bytes)", selectedSkill, outputPath, size)))
+	return nil
+}
+
+// runImportWizard guides the user through importing a skill from a .tar.gz archive.
+func runImportWizard(cfg *config.Config) error {
+	var archivePath string
+
+	err := newForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Archive path").
+				Description("Path to the .tar.gz file to import").
+				Value(&archivePath),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	if archivePath == "" {
+		return fmt.Errorf("archive path is required")
+	}
+
+	registryPath := config.ExpandPath(cfg.RegistryPath)
+
+	// Preview: do a dry-run import to temp to show skill name
+	tmpPreview, err := os.MkdirTemp("", ".skillsync-preview-*")
+	if err != nil {
+		return fmt.Errorf("creating preview temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpPreview)
+
+	previewName, err := archive.Import(archivePath, tmpPreview, true)
+	if err != nil {
+		return fmt.Errorf("reading archive: %w", err)
+	}
+
+	fmt.Printf("\n  Skill found in archive: %s\n", previewName)
+
+	var confirmed bool
+	err = newForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Install skill %q to %s?", previewName, registryPath)).
+				Value(&confirmed),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return fmt.Errorf("import cancelled")
+	}
+
+	skillName, err := archive.Import(archivePath, registryPath, false)
+	if err != nil {
+		// Try with force if it exists
+		var forceRetry bool
+		if strings.Contains(err.Error(), "already installed") {
+			err2 := newForm(
+				huh.NewGroup(
+					huh.NewConfirm().
+						Title(fmt.Sprintf("Skill %q already exists — overwrite?", previewName)).
+						Value(&forceRetry),
+				),
+			).Run()
+			if err2 != nil {
+				return err2
+			}
+			if forceRetry {
+				skillName, err = archive.Import(archivePath, registryPath, true)
+				if err != nil {
+					return fmt.Errorf("import failed: %w", err)
+				}
+			} else {
+				return fmt.Errorf("import cancelled")
+			}
+		} else {
+			return fmt.Errorf("import failed: %w", err)
+		}
+	}
+
+	fmt.Println(successStyle.Render(fmt.Sprintf("\n  ✓ Skill %q installed to %s", skillName, filepath.Join(registryPath, skillName))))
 	return nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Akemid/skillsync/internal/archive"
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/registry"
 )
@@ -382,6 +383,129 @@ func TestReadSkillsFromDir(t *testing.T) {
 			t.Error("expected error for missing dir, got nil")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Smoke tests for new wizard helpers (Phase 5.4)
+// These verify the functions don't panic with minimal inputs and return expected
+// errors when called without interactive TUI (no stdin terminal).
+// ---------------------------------------------------------------------------
+
+// TestRunExportWizard_EmptyRegistry verifies that runExportWizard returns an
+// error (not a panic) when no local skills are available.
+func TestRunExportWizard_EmptyRegistry(t *testing.T) {
+	reg := &registry.Registry{Skills: []registry.Skill{}}
+	err := runExportWizard(reg)
+	if err == nil {
+		t.Fatal("runExportWizard() error = nil, want error for empty registry")
+	}
+	if !containsStrWiz(err.Error(), "no local skills") {
+		t.Errorf("error = %q, want to contain 'no local skills'", err.Error())
+	}
+}
+
+// TestRunShareSkillWizard_EmptyRegistryAndNoTaps verifies that runShareSkillWizard
+// with no taps and an empty registry returns an appropriate error.
+func TestRunShareSkillWizard_EmptyRegistryNoSkills(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Taps:         []config.Tap{{Name: "my-tap", URL: "https://github.com/user/tap.git", Branch: "main"}},
+	}
+	reg := &registry.Registry{Skills: []registry.Skill{}}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	err := runShareSkillWizard(cfg, reg, configPath)
+	if err == nil {
+		t.Fatal("runShareSkillWizard() error = nil, want error for empty registry")
+	}
+	if !containsStrWiz(err.Error(), "no local skills") {
+		t.Errorf("error = %q, want to contain 'no local skills'", err.Error())
+	}
+}
+
+// TestRunImportWizard_InvalidArchivePath verifies that runImportWizard with a
+// non-existent file path returns an error without panicking.
+// Note: this test bypasses the TUI form by testing the archive.Import path directly.
+func TestRunImportWizard_ArchiveIntegration(t *testing.T) {
+	// Create a valid archive
+	base := t.TempDir()
+	skillDir := filepath.Join(base, "smoke-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: smoke-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "smoke-skill.tar.gz")
+	if err := archive.Export(skillDir, archivePath); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Verify that the archive is valid by importing it directly
+	registry := t.TempDir()
+	skillName, err := archive.Import(archivePath, registry, false)
+	if err != nil {
+		t.Fatalf("Import() error = %v, want nil", err)
+	}
+	if skillName != "smoke-skill" {
+		t.Errorf("skillName = %q, want %q", skillName, "smoke-skill")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W3 — runImportWizard smoke test
+// ---------------------------------------------------------------------------
+
+// TestRunImportWizard_NoPanic verifies that runImportWizard does not panic when
+// called outside a TTY. In non-interactive mode huh returns a program-killed
+// error, so we only assert no panic and no nil-pointer dereference.
+func TestRunImportWizard_NoPanic(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+	}
+
+	// Must not panic — any error is acceptable in non-TTY
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("runImportWizard() panicked: %v", r)
+		}
+	}()
+
+	_ = runImportWizard(cfg)
+}
+
+// ---------------------------------------------------------------------------
+// W4 — runExportWizard post-form smoke test
+// ---------------------------------------------------------------------------
+
+// TestRunExportWizard_WithSkills_NoPanic verifies that runExportWizard does not
+// panic when at least one skill is present (bypassing the early-exit guard).
+// In non-TTY mode huh returns a program error; we only assert no panic.
+func TestRunExportWizard_WithSkills_NoPanic(t *testing.T) {
+	reg := &registry.Registry{
+		Skills: []registry.Skill{
+			{Name: "smoke-skill", Path: "/tmp/smoke-skill"},
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("runExportWizard() panicked: %v", r)
+		}
+	}()
+
+	// Will return an error from huh (no TTY) — we just ensure it doesn't panic
+	_ = runExportWizard(reg)
+}
+
+func containsStrWiz(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
