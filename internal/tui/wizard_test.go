@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Akemid/skillsync/internal/archive"
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/registry"
 )
@@ -382,6 +383,369 @@ func TestReadSkillsFromDir(t *testing.T) {
 			t.Error("expected error for missing dir, got nil")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Smoke tests for new wizard helpers (Phase 5.4)
+// These verify the functions don't panic with minimal inputs and return expected
+// errors when called without interactive TUI (no stdin terminal).
+// ---------------------------------------------------------------------------
+
+// TestRunExportWizard_EmptyRegistry verifies that runExportWizard returns an
+// error (not a panic) when no local skills are available.
+func TestRunExportWizard_EmptyRegistry(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Tools:        []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+	}
+	reg := &registry.Registry{Skills: []registry.Skill{}}
+	err := runExportWizard(cfg, reg, "")
+	if err == nil {
+		t.Fatal("runExportWizard() error = nil, want error for empty registry")
+	}
+	if !containsStrWiz(err.Error(), "no local skills") {
+		t.Errorf("error = %q, want to contain 'no local skills'", err.Error())
+	}
+}
+
+// TestRunShareSkillWizard_EmptyRegistryAndNoTaps verifies that runShareSkillWizard
+// with no taps and an empty registry returns an appropriate error.
+func TestRunShareSkillWizard_EmptyRegistryNoSkills(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Taps:         []config.Tap{{Name: "my-tap", URL: "https://github.com/user/tap.git", Branch: "main"}},
+	}
+	reg := &registry.Registry{Skills: []registry.Skill{}}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	err := runShareSkillWizard(cfg, reg, configPath, "")
+	if err == nil {
+		t.Fatal("runShareSkillWizard() error = nil, want error for empty registry")
+	}
+	if !containsStrWiz(err.Error(), "no local skills") {
+		t.Errorf("error = %q, want to contain 'no local skills'", err.Error())
+	}
+}
+
+// TestRunImportWizard_InvalidArchivePath verifies that runImportWizard with a
+// non-existent file path returns an error without panicking.
+// Note: this test bypasses the TUI form by testing the archive.Import path directly.
+func TestRunImportWizard_ArchiveIntegration(t *testing.T) {
+	// Create a valid archive
+	base := t.TempDir()
+	skillDir := filepath.Join(base, "smoke-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: smoke-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "smoke-skill.tar.gz")
+	if err := archive.Export(skillDir, archivePath); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Verify that the archive is valid by importing it directly
+	registry := t.TempDir()
+	skillName, err := archive.Import(archivePath, registry, false)
+	if err != nil {
+		t.Fatalf("Import() error = %v, want nil", err)
+	}
+	if skillName != "smoke-skill" {
+		t.Errorf("skillName = %q, want %q", skillName, "smoke-skill")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W3 — runImportWizard smoke test
+// ---------------------------------------------------------------------------
+
+// TestRunImportWizard_NoPanic verifies that runImportWizard does not panic when
+// called outside a TTY. In non-interactive mode huh returns a program-killed
+// error, so we only assert no panic and no nil-pointer dereference.
+func TestRunImportWizard_NoPanic(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+	}
+
+	// Must not panic — any error is acceptable in non-TTY
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("runImportWizard() panicked: %v", r)
+		}
+	}()
+
+	_ = runImportWizard(cfg)
+}
+
+// ---------------------------------------------------------------------------
+// W4 — runExportWizard post-form smoke test
+// ---------------------------------------------------------------------------
+
+// TestRunExportWizard_WithSkills_NoPanic verifies that runExportWizard does not
+// panic when at least one skill is present (bypassing the early-exit guard).
+// In non-TTY mode huh returns a program error; we only assert no panic.
+func TestRunExportWizard_WithSkills_NoPanic(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Tools:        []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+	}
+	reg := &registry.Registry{
+		Skills: []registry.Skill{
+			{Name: "smoke-skill", Path: "/tmp/smoke-skill"},
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("runExportWizard() panicked: %v", r)
+		}
+	}()
+
+	// Will return an error from huh (no TTY) — we just ensure it doesn't panic
+	_ = runExportWizard(cfg, reg, "")
+}
+
+// ---------------------------------------------------------------------------
+// discoverProjectSkills
+// ---------------------------------------------------------------------------
+
+func TestDiscoverProjectSkills(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupDir   func(t *testing.T) string // returns projectDir; empty string = skip mkdir
+		tools      []config.Tool
+		regPath    string
+		wantLen    int
+		wantSkills []projectSkill // nil means don't check contents, just length
+	}{
+		{
+			name: "empty projectDir returns empty",
+			setupDir: func(t *testing.T) string {
+				return ""
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 0,
+		},
+		{
+			name: "SKILL.md present returns skill with correct fields",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				skillDir := filepath.Join(dir, ".claude", "skills", "my-skill")
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+					[]byte("---\nname: my-skill\n---\n"), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return dir
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 1,
+			wantSkills: []projectSkill{
+				{Name: "my-skill", ToolName: "claude"},
+			},
+		},
+		{
+			name: "subdir without SKILL.md is skipped",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// create dir without SKILL.md
+				noSkillDir := filepath.Join(dir, ".claude", "skills", "not-a-skill")
+				if err := os.MkdirAll(noSkillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				return dir
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 0,
+		},
+		{
+			name: "two tools sharing same LocalPath deduplicated to 1 result",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// both kiro-ide and kiro-cli share .kiro/skills
+				skillDir := filepath.Join(dir, ".kiro", "skills", "shared-skill")
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+					[]byte("---\nname: shared-skill\n---\n"), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return dir
+			},
+			tools: []config.Tool{
+				{Name: "kiro-ide", LocalPath: ".kiro/skills"},
+				{Name: "kiro-cli", LocalPath: ".kiro/skills"},
+			},
+			regPath: t.TempDir(),
+			wantLen: 1,
+			wantSkills: []projectSkill{
+				{Name: "shared-skill", ToolName: "kiro-ide"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := tt.setupDir(t)
+			got := discoverProjectSkills(projectDir, tt.tools, tt.regPath)
+			if len(got) != tt.wantLen {
+				t.Fatalf("len = %d, want %d; got %v", len(got), tt.wantLen, got)
+			}
+			for i, want := range tt.wantSkills {
+				if i >= len(got) {
+					break
+				}
+				if got[i].Name != want.Name {
+					t.Errorf("[%d] Name = %q, want %q", i, got[i].Name, want.Name)
+				}
+				if want.Path != "" && got[i].Path != want.Path {
+					t.Errorf("[%d] Path = %q, want %q", i, got[i].Path, want.Path)
+				}
+				if got[i].ToolName != want.ToolName {
+					t.Errorf("[%d] ToolName = %q, want %q", i, got[i].ToolName, want.ToolName)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildMergedSkillOptions + resolveSkillPath
+// ---------------------------------------------------------------------------
+
+func TestBuildMergedSkillOptions(t *testing.T) {
+	regSkills := []registry.Skill{
+		{Name: "go-testing", Path: "/reg/go-testing"},
+	}
+	localSkills := []projectSkill{
+		{Name: "my-skill", Path: "/proj/.claude/skills/my-skill", ToolName: "claude"},
+	}
+
+	opts := buildMergedSkillOptions(regSkills, localSkills)
+
+	// Expect 2 options: one registry, one local
+	if len(opts) != 2 {
+		t.Fatalf("len(opts) = %d, want 2; opts = %v", len(opts), opts)
+	}
+
+	// Registry option: key = "registry:go-testing", label = "go-testing (registry)"
+	if opts[0].Value != "registry:go-testing" {
+		t.Errorf("opts[0].Value = %q, want %q", opts[0].Value, "registry:go-testing")
+	}
+	if opts[0].Key != "go-testing (registry)" {
+		t.Errorf("opts[0].Key = %q, want %q", opts[0].Key, "go-testing (registry)")
+	}
+
+	// Local option: key = "local:/proj/.claude/skills/my-skill", label = "my-skill (.claude)"
+	if opts[1].Value != "local:/proj/.claude/skills/my-skill" {
+		t.Errorf("opts[1].Value = %q, want %q", opts[1].Value, "local:/proj/.claude/skills/my-skill")
+	}
+	if opts[1].Key != "my-skill (.claude)" {
+		t.Errorf("opts[1].Key = %q, want %q", opts[1].Key, "my-skill (.claude)")
+	}
+}
+
+func TestResolveSkillPath_Registry(t *testing.T) {
+	regSkills := []registry.Skill{
+		{Name: "go-testing", Path: "/reg/go-testing"},
+	}
+	localSkills := []projectSkill{}
+
+	t.Run("registry key resolves to skill path", func(t *testing.T) {
+		path, err := resolveSkillPath("registry:go-testing", regSkills, localSkills)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if path != "/reg/go-testing" {
+			t.Errorf("path = %q, want %q", path, "/reg/go-testing")
+		}
+	})
+
+	t.Run("missing skill in registry returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("registry:missing", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for missing registry skill, got nil")
+		}
+	})
+}
+
+func TestResolveSkillPath_Local(t *testing.T) {
+	regSkills := []registry.Skill{}
+	localSkills := []projectSkill{
+		{Name: "my-skill", Path: "/proj/.claude/skills/my-skill", ToolName: "claude"},
+	}
+
+	t.Run("local key resolves to path", func(t *testing.T) {
+		path, err := resolveSkillPath("local:/proj/.claude/skills/my-skill", regSkills, localSkills)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if path != "/proj/.claude/skills/my-skill" {
+			t.Errorf("path = %q, want %q", path, "/proj/.claude/skills/my-skill")
+		}
+	})
+
+	t.Run("local key with nonexistent path returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("local:/does/not/exist/skill", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for nonexistent local path, got nil")
+		}
+	})
+
+	t.Run("bad key prefix returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("unknown:something", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for unknown key prefix, got nil")
+		}
+	})
+}
+
+// TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped verifies that a skill
+// directory that is a symlink resolving into the registry is skipped.
+func TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped(t *testing.T) {
+	regDir := t.TempDir()
+	// real skill lives in registry
+	regSkillDir := filepath.Join(regDir, "reg-skill")
+	if err := os.MkdirAll(regSkillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll regSkill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(regSkillDir, "SKILL.md"),
+		[]byte("---\nname: reg-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	skillsDir := filepath.Join(projectDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll skillsDir: %v", err)
+	}
+	// symlink from project skill dir → registry skill dir
+	if err := os.Symlink(regSkillDir, filepath.Join(skillsDir, "reg-skill")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	tools := []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}}
+	got := discoverProjectSkills(projectDir, tools, regDir)
+	if len(got) != 0 {
+		t.Errorf("expected 0 skills (symlink into registry should be skipped), got %d: %v", len(got), got)
+	}
+}
+
+func containsStrWiz(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

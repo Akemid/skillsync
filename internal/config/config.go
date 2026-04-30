@@ -48,11 +48,19 @@ type Bundle struct {
 	Skills      []SkillRef `yaml:"skills"`
 }
 
+// Tap represents a writable git repository for uploading skills
+type Tap struct {
+	Name   string `yaml:"name"`
+	URL    string `yaml:"url"`
+	Branch string `yaml:"branch"`
+}
+
 // Config is the top-level skillsync configuration
 type Config struct {
 	RegistryPath string   `yaml:"registry_path"` // path to skill registry (e.g. ~/.agents/skills)
 	Bundles      []Bundle `yaml:"bundles"`
 	Tools        []Tool   `yaml:"tools"`
+	Taps         []Tap    `yaml:"taps,omitempty"`
 }
 
 // MigrationSummary reports what changed during upgrade-config.

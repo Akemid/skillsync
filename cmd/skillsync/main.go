@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Akemid/skillsync/internal/archive"
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/installer"
 	"github.com/Akemid/skillsync/internal/registry"
 	"github.com/Akemid/skillsync/internal/sync"
+	"github.com/Akemid/skillsync/internal/tap"
 	"github.com/Akemid/skillsync/internal/tui"
 )
 
@@ -101,6 +103,14 @@ func run() error {
 			return cmdRemote(cfg, configPath)
 		case "uninstall":
 			return cmdUninstall(cfg, reg, projectDir)
+		case "tap":
+			return cmdTap(cfg, configPath)
+		case "upload":
+			return cmdUpload(cfg, reg, configPath)
+		case "export":
+			return cmdExport(reg)
+		case "import":
+			return cmdImport(cfg, configPath)
 		case "--help", "-h", "help":
 			printUsage()
 			return nil
@@ -397,6 +407,349 @@ func cmdUpgradeConfig(configPath string) error {
 	return nil
 }
 
+// cmdTap dispatches tap subcommands: add, list, remove.
+func cmdTap(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage:")
+		fmt.Println("  skillsync tap add <name> <url> [--branch <branch>]")
+		fmt.Println("  skillsync tap list")
+		fmt.Println("  skillsync tap remove <name>")
+		return nil
+	}
+	switch os.Args[2] {
+	case "add":
+		return cmdTapAdd(cfg, configPath)
+	case "list":
+		return cmdTapList(cfg)
+	case "remove":
+		return cmdTapRemove(cfg, configPath)
+	default:
+		return fmt.Errorf("unknown tap subcommand: %s", os.Args[2])
+	}
+}
+
+func cmdTapAdd(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 5 {
+		return fmt.Errorf("usage: skillsync tap add <name> <url> [--branch <branch>]")
+	}
+	name := os.Args[3]
+	url := os.Args[4]
+	branch := "main"
+
+	for i := 5; i < len(os.Args); i++ {
+		if os.Args[i] == "--branch" && i+1 < len(os.Args) {
+			i++
+			branch = os.Args[i]
+		}
+	}
+
+	// Check for duplicate tap name
+	for _, t := range cfg.Taps {
+		if t.Name == name {
+			return fmt.Errorf("tap %q already registered", name)
+		}
+	}
+
+	cfg.Taps = append(cfg.Taps, config.Tap{Name: name, URL: url, Branch: branch})
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	fmt.Printf("Tap %q added (url: %s, branch: %s)\n", name, url, branch)
+	return nil
+}
+
+func cmdTapList(cfg *config.Config) error {
+	if len(cfg.Taps) == 0 {
+		fmt.Println("No taps registered. Use `skillsync tap add` to register one.")
+		return nil
+	}
+	fmt.Printf("Registered taps (%d):\n\n", len(cfg.Taps))
+	for _, t := range cfg.Taps {
+		fmt.Printf("  %-20s  %s\n", t.Name, t.URL)
+	}
+	return nil
+}
+
+func cmdTapRemove(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 4 {
+		return fmt.Errorf("usage: skillsync tap remove <name>")
+	}
+	name := os.Args[3]
+
+	idx := -1
+	for i, t := range cfg.Taps {
+		if t.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("tap %q not found", name)
+	}
+
+	cfg.Taps = append(cfg.Taps[:idx], cfg.Taps[idx+1:]...)
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	fmt.Printf("Tap %q removed\n", name)
+	return nil
+}
+
+// cmdUpload uploads a local skill to a registered tap.
+// Usage: skillsync upload <skill> --to <tap-name> [--force]
+func cmdUpload(cfg *config.Config, reg *registry.Registry, configPath string) error {
+	if len(os.Args) < 3 {
+		return fmt.Errorf("usage: skillsync upload <skill> --to <tap-name> [--force]")
+	}
+	skillName := os.Args[2]
+	tapName := ""
+	force := false
+
+	for i := 3; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--to":
+			if i+1 < len(os.Args) {
+				i++
+				tapName = os.Args[i]
+			}
+		case "--force":
+			force = true
+		}
+	}
+
+	if tapName == "" {
+		return fmt.Errorf("--to <tap-name> is required")
+	}
+
+	// Resolve skill
+	var foundSkill *registry.Skill
+	for i := range reg.Skills {
+		if reg.Skills[i].Name == skillName {
+			foundSkill = &reg.Skills[i]
+			break
+		}
+	}
+	if foundSkill == nil {
+		return fmt.Errorf("skill %q not found in registry", skillName)
+	}
+
+	// Resolve tap
+	var foundTap *config.Tap
+	for i := range cfg.Taps {
+		if cfg.Taps[i].Name == tapName {
+			foundTap = &cfg.Taps[i]
+			break
+		}
+	}
+	if foundTap == nil {
+		return fmt.Errorf("tap %q not found; use `skillsync tap add` to register it", tapName)
+	}
+
+	tapper, err := tap.New(cfg.RegistryPath)
+	if err != nil {
+		return fmt.Errorf("initializing tapper: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := tapper.Upload(ctx, *foundTap, foundSkill.Path, foundSkill.Name, force); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	fmt.Printf("✓ Uploaded %q to tap %q.\n", skillName, tapName)
+	fmt.Printf("Others can install it with:\n")
+	fmt.Printf("  skillsync remote add %s %s\n", tapName, foundTap.URL)
+	fmt.Printf("  skillsync sync\n")
+	return nil
+}
+
+// cmdExport exports a skill to a .tar.gz archive.
+// Usage: skillsync export <skill> [--output <path>]
+func cmdExport(reg *registry.Registry) error {
+	if len(os.Args) < 3 {
+		return fmt.Errorf("usage: skillsync export <skill> [--output <path>]")
+	}
+	skillName := os.Args[2]
+	outputPath := ""
+
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "--output" && i+1 < len(os.Args) {
+			i++
+			outputPath = os.Args[i]
+		}
+	}
+
+	// Resolve skill
+	var foundSkill *registry.Skill
+	for i := range reg.Skills {
+		if reg.Skills[i].Name == skillName {
+			foundSkill = &reg.Skills[i]
+			break
+		}
+	}
+	if foundSkill == nil {
+		return fmt.Errorf("skill %q not found in registry", skillName)
+	}
+
+	if outputPath == "" {
+		outputPath = skillName + ".tar.gz"
+	}
+
+	if err := archive.Export(foundSkill.Path, outputPath); err != nil {
+		return fmt.Errorf("export failed: %w", err)
+	}
+
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return fmt.Errorf("stat output: %w", err)
+	}
+	fmt.Printf("✓ Exported %q to %s (%d bytes)\n", skillName, outputPath, info.Size())
+	return nil
+}
+
+// cmdImport imports a skill from a .tar.gz archive into the registry.
+// Usage: skillsync import <file.tar.gz> [--force]
+func cmdImport(cfg *config.Config, configPath string) error {
+	if len(os.Args) < 3 {
+		return fmt.Errorf("usage: skillsync import <file.tar.gz> [--force]")
+	}
+	archivePath := os.Args[2]
+	force := false
+
+	for _, arg := range os.Args[3:] {
+		if arg == "--force" {
+			force = true
+		}
+	}
+
+	registryPath := config.ExpandPath(cfg.RegistryPath)
+
+	skillName, err := archive.Import(archivePath, registryPath, force)
+	if err != nil {
+		return fmt.Errorf("import failed: %w", err)
+	}
+
+	fmt.Printf("✓ Skill %q installed to %s\n", skillName, filepath.Join(registryPath, skillName))
+
+	// Print description from SKILL.md if available
+	skillMDPath := filepath.Join(registryPath, skillName, "SKILL.md")
+	if desc := readSkillDescription(skillMDPath); desc != "" {
+		fmt.Printf("Description: %s\n", desc)
+	}
+
+	return nil
+}
+
+// readSkillDescription reads the description field from a SKILL.md frontmatter.
+// Returns an empty string if the file can't be read or the field is absent.
+func readSkillDescription(skillMDPath string) string {
+	data, err := os.ReadFile(skillMDPath)
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	// Parse YAML frontmatter between --- delimiters
+	if !hasPrefix(content, "---") {
+		return ""
+	}
+	// Find closing ---
+	rest := content[3:]
+	end := findFrontmatterEnd(rest)
+	if end < 0 {
+		return ""
+	}
+	frontmatter := rest[:end]
+	return extractYAMLField(frontmatter, "description")
+}
+
+// hasPrefix checks if s starts with prefix (avoids importing strings in main).
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// findFrontmatterEnd returns the index of the closing "---" line in s, or -1.
+func findFrontmatterEnd(s string) int {
+	i := 0
+	for i < len(s) {
+		nl := indexByte(s[i:], '\n')
+		var line string
+		if nl < 0 {
+			line = s[i:]
+			i = len(s)
+		} else {
+			line = s[i : i+nl]
+			i += nl + 1
+		}
+		// Trim carriage return
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		if line == "---" {
+			return i - nl - 1 - 1 // position before this line
+		}
+	}
+	return -1
+}
+
+// indexByte returns index of first occurrence of b in s, or -1.
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+// extractYAMLField extracts a simple "key: value" field from a YAML frontmatter string.
+func extractYAMLField(frontmatter, key string) string {
+	prefix := key + ":"
+	lines := splitLines(frontmatter)
+	for _, line := range lines {
+		trimmed := trimLeft(line)
+		if hasPrefix(trimmed, prefix) {
+			val := trimLeft(trimmed[len(prefix):])
+			// Remove optional surrounding quotes
+			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+				val = val[1 : len(val)-1]
+			}
+			return val
+		}
+	}
+	return ""
+}
+
+// splitLines splits s into lines (handles \n and \r\n).
+func splitLines(s string) []string {
+	var lines []string
+	for {
+		nl := indexByte(s, '\n')
+		if nl < 0 {
+			if s != "" {
+				lines = append(lines, s)
+			}
+			break
+		}
+		line := s[:nl]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		lines = append(lines, line)
+		s = s[nl+1:]
+	}
+	return lines
+}
+
+// trimLeft removes leading spaces and tabs from s.
+func trimLeft(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return s[i:]
+}
+
 func printUsage() {
 	fmt.Println(`skillsync — AI Agent Skills Installer
 
@@ -410,6 +763,12 @@ Usage:
   skillsync remote add  	Add a remote bundle to config
   skillsync uninstall   	Remove a skill symlink
   skillsync init        	Generate default config file
+  skillsync tap add      	Register a writable git repo (tap) for uploading skills
+  skillsync tap list     	List registered taps
+  skillsync tap remove   	Remove a registered tap
+  skillsync upload       	Upload a local skill to a registered tap
+  skillsync export       	Export a skill to a .tar.gz archive
+  skillsync import       	Import a skill from a .tar.gz archive
   skillsync help        	Show this help
 
 Flags:

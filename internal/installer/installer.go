@@ -2,9 +2,9 @@ package installer
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
-	"fmt"
 	"os"
 	"path/filepath"
 

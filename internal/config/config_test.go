@@ -438,6 +438,55 @@ func TestMigrateTools_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// TestTap_RoundTrip verifies that Tap fields survive marshal/unmarshal and that
+// nil Taps slice is omitted from YAML output.
+func TestTap_RoundTrip(t *testing.T) {
+	t.Run("tap fields survive yaml round-trip", func(t *testing.T) {
+		cfg := &Config{
+			RegistryPath: "~/.agents/skills",
+			Taps: []Tap{
+				{Name: "my-skills", URL: "git@github.com:user/my-skills.git", Branch: "main"},
+			},
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("yaml.Marshal error = %v", err)
+		}
+
+		var got Config
+		if err := yaml.Unmarshal(data, &got); err != nil {
+			t.Fatalf("yaml.Unmarshal error = %v", err)
+		}
+
+		if len(got.Taps) != 1 {
+			t.Fatalf("len(got.Taps) = %d, want 1", len(got.Taps))
+		}
+		tap := got.Taps[0]
+		if tap.Name != "my-skills" {
+			t.Errorf("Tap.Name = %q, want %q", tap.Name, "my-skills")
+		}
+		if tap.URL != "git@github.com:user/my-skills.git" {
+			t.Errorf("Tap.URL = %q, want %q", tap.URL, "git@github.com:user/my-skills.git")
+		}
+		if tap.Branch != "main" {
+			t.Errorf("Tap.Branch = %q, want %q", tap.Branch, "main")
+		}
+	})
+
+	t.Run("nil taps slice omitted from yaml output", func(t *testing.T) {
+		cfg := &Config{
+			RegistryPath: "~/.agents/skills",
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("yaml.Marshal error = %v", err)
+		}
+		if contains(string(data), "taps:") {
+			t.Errorf("yaml output contains 'taps:' key but should be omitted when nil:\n%s", string(data))
+		}
+	})
+}
+
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
