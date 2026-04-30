@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/installer"
 	"github.com/Akemid/skillsync/internal/registry"
+	"github.com/Akemid/skillsync/internal/skillasset"
 	"github.com/Akemid/skillsync/internal/sync"
 	"github.com/Akemid/skillsync/internal/tap"
 	"github.com/Akemid/skillsync/internal/tui"
@@ -150,6 +152,35 @@ func run() error {
 	// Install
 	results := installer.Install(skills, selectedTools, result.Scope, result.ProjectDir)
 	tui.PrintResults(results)
+
+	// Self-skill install offer
+	registryPath := config.ExpandPath(cfg.RegistryPath)
+	selfSkillDir := filepath.Join(registryPath, skillasset.SkillName)
+	selfSkillMD := filepath.Join(selfSkillDir, "SKILL.md")
+
+	alreadyInstalled := false
+	if existing, err := os.ReadFile(selfSkillMD); err == nil {
+		if bytes.Equal(existing, skillasset.Content()) {
+			alreadyInstalled = true
+		}
+	}
+
+	if !alreadyInstalled {
+		if tui.ConfirmSelfSkillInstall() {
+			if err := skillasset.ExtractTo(registryPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not extract skillsync skill: %v\n", err)
+			} else {
+				selfSkill := registry.Skill{Name: skillasset.SkillName, Path: selfSkillDir}
+				selfResults := installer.Install(
+					[]registry.Skill{selfSkill},
+					selectedTools,
+					installer.ScopeGlobal,
+					"",
+				)
+				tui.PrintResults(selfResults)
+			}
+		}
+	}
 
 	return nil
 }

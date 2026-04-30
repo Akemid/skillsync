@@ -1029,6 +1029,26 @@ func PrintResults(results []installer.Result) {
 		errorStyle.Render(fmt.Sprintf("%d errors", errors)))
 }
 
+// ConfirmSelfSkillInstall prompts the user to install the skillsync skill
+// into their central registry. Returns true if accepted, false otherwise
+// (including TUI failures or non-TTY environments).
+// Pure UI — no side effects, no skillasset or installer imports.
+func ConfirmSelfSkillInstall() bool {
+	var confirm bool
+	err := newForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Install the skillsync skill?").
+				Description("Adds the skillsync CLI reference to your central registry so AI agents can use it.").
+				Value(&confirm),
+		),
+	).Run()
+	if err != nil {
+		return false
+	}
+	return confirm
+}
+
 // DetectInstalledTools checks which tools have their directories present
 func DetectInstalledTools(tools []config.Tool) []config.Tool {
 	updated := make([]config.Tool, len(tools))
