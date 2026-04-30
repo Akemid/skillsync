@@ -34,7 +34,11 @@ func discoverProjectSkills(projectDir string, tools []config.Tool, regPath strin
 		return nil
 	}
 
-	registryAbs := filepath.Clean(config.ExpandPath(regPath))
+	registryExpanded := filepath.Clean(config.ExpandPath(regPath))
+	registryAbs, _ := filepath.EvalSymlinks(registryExpanded)
+	if registryAbs == "" {
+		registryAbs = registryExpanded
+	}
 	seenLocalDirs := make(map[string]bool)
 	var results []projectSkill
 
@@ -151,9 +155,9 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir, configPat
 	case "add-remote":
 		return nil, runAddRemoteWizard(cfg, configPath)
 	case "share-skill":
-		return nil, runShareSkillWizard(cfg, reg, configPath)
+		return nil, runShareSkillWizard(cfg, reg, configPath, projectDir)
 	case "export-skill":
-		return nil, runExportWizard(reg)
+		return nil, runExportWizard(cfg, reg, projectDir)
 	case "import-skill":
 		return nil, runImportWizard(cfg)
 	}
@@ -325,7 +329,9 @@ func runAddRemoteWizard(cfg *config.Config, configPath string) error {
 
 // runShareSkillWizard guides the user through uploading a skill to a registered tap.
 // If no taps are registered, it prompts to register one inline.
-func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath string) error {
+// projectDir is the current working directory; when non-empty, project-local skills
+// are discovered and merged with registry skills in the selection list.
+func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath, projectDir string) error {
 	// If no taps, prompt to register one first
 	if len(cfg.Taps) == 0 {
 		fmt.Println(dimStyle.Render("  No taps registered. Let's add one first.\n"))
@@ -362,9 +368,17 @@ func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath 
 		fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ Tap %q registered", tapName)))
 	}
 
-	// Build skill options (local only)
-	localSkills := localBundleSkills(reg)
-	if len(localSkills) == 0 {
+	// Build merged skill options (registry + project-local)
+	regSkillNames := localBundleSkills(reg)
+	regSkillsForMerge := make([]registry.Skill, 0, len(regSkillNames))
+	for _, s := range reg.Skills {
+		if !strings.Contains(s.Path, "/_remote/") {
+			regSkillsForMerge = append(regSkillsForMerge, s)
+		}
+	}
+	projectLocalSkills := discoverProjectSkills(projectDir, cfg.Tools, cfg.RegistryPath)
+	skillOpts := buildMergedSkillOptions(regSkillsForMerge, projectLocalSkills)
+	if len(skillOpts) == 0 {
 		return fmt.Errorf("no local skills available to share")
 	}
 
@@ -374,12 +388,7 @@ func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath 
 		tapOpts = append(tapOpts, huh.NewOption(fmt.Sprintf("%s (%s)", t.Name, t.URL), t.Name))
 	}
 
-	skillOpts := make([]huh.Option[string], 0, len(localSkills))
-	for _, s := range localSkills {
-		skillOpts = append(skillOpts, huh.NewOption(s, s))
-	}
-
-	var selectedSkill, selectedTap string
+	var selectedKey, selectedTap string
 	force := false
 
 	err := newForm(
@@ -387,7 +396,7 @@ func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath 
 			huh.NewSelect[string]().
 				Title("Select skill to share").
 				Options(skillOpts...).
-				Value(&selectedSkill),
+				Value(&selectedKey),
 			huh.NewSelect[string]().
 				Title("Select tap to upload to").
 				Options(tapOpts...).
@@ -401,16 +410,19 @@ func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath 
 		return err
 	}
 
-	// Find skill path
-	var skillPath string
-	for _, s := range reg.Skills {
-		if s.Name == selectedSkill {
-			skillPath = s.Path
-			break
-		}
+	// Resolve skill path from selected key
+	skillPath, err := resolveSkillPath(selectedKey, regSkillsForMerge, projectLocalSkills)
+	if err != nil {
+		return fmt.Errorf("resolving skill: %w", err)
 	}
-	if skillPath == "" {
-		return fmt.Errorf("skill %q not found in registry", selectedSkill)
+
+	// Extract skill name from the key
+	parts := strings.SplitN(selectedKey, ":", 2)
+	var selectedSkill string
+	if parts[0] == "registry" {
+		selectedSkill = parts[1]
+	} else {
+		selectedSkill = filepath.Base(skillPath)
 	}
 
 	// Find tap
@@ -442,30 +454,41 @@ func runShareSkillWizard(cfg *config.Config, reg *registry.Registry, configPath 
 }
 
 // runExportWizard guides the user through exporting a local skill to a .tar.gz archive.
-func runExportWizard(reg *registry.Registry) error {
-	localSkills := localBundleSkills(reg)
-	if len(localSkills) == 0 {
+// cfg and projectDir are used to discover project-local skills alongside registry skills.
+func runExportWizard(cfg *config.Config, reg *registry.Registry, projectDir string) error {
+	// Build merged skill options (registry + project-local)
+	regSkillsForMerge := make([]registry.Skill, 0)
+	for _, s := range reg.Skills {
+		if !strings.Contains(s.Path, "/_remote/") {
+			regSkillsForMerge = append(regSkillsForMerge, s)
+		}
+	}
+	projectLocalSkills := discoverProjectSkills(projectDir, cfg.Tools, cfg.RegistryPath)
+	skillOpts := buildMergedSkillOptions(regSkillsForMerge, projectLocalSkills)
+	if len(skillOpts) == 0 {
 		return fmt.Errorf("no local skills available to export")
 	}
 
-	skillOpts := make([]huh.Option[string], 0, len(localSkills))
-	for _, s := range localSkills {
-		skillOpts = append(skillOpts, huh.NewOption(s, s))
-	}
-
-	var selectedSkill, outputPath string
+	var selectedKey, outputPath string
 
 	err := newForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Select skill to export").
 				Options(skillOpts...).
-				Value(&selectedSkill),
+				Value(&selectedKey),
 		),
 	).Run()
 	if err != nil {
 		return err
 	}
+
+	// Resolve skill path from selected key
+	skillPath, err := resolveSkillPath(selectedKey, regSkillsForMerge, projectLocalSkills)
+	if err != nil {
+		return fmt.Errorf("resolving skill: %w", err)
+	}
+	selectedSkill := filepath.Base(skillPath)
 
 	outputPath = selectedSkill + ".tar.gz"
 
@@ -479,18 +502,6 @@ func runExportWizard(reg *registry.Registry) error {
 	).Run()
 	if err != nil {
 		return err
-	}
-
-	// Find skill path
-	var skillPath string
-	for _, s := range reg.Skills {
-		if s.Name == selectedSkill {
-			skillPath = s.Path
-			break
-		}
-	}
-	if skillPath == "" {
-		return fmt.Errorf("skill %q not found in registry", selectedSkill)
 	}
 
 	if err := archive.Export(skillPath, outputPath); err != nil {
@@ -829,6 +840,65 @@ func readSkillsFromDir(dir, bundleName string) ([]string, error) {
 		}
 	}
 	return skills, nil
+}
+
+// buildMergedSkillOptions builds a combined list of huh options from both
+// central registry skills and project-local skills. Registry options use key
+// "registry:<name>" and project-local options use key "local:<abs-path>".
+func buildMergedSkillOptions(regSkills []registry.Skill, localSkills []projectSkill) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(regSkills)+len(localSkills))
+
+	for _, s := range regSkills {
+		key := "registry:" + s.Name
+		label := s.Name + " (registry)"
+		opts = append(opts, huh.NewOption(label, key))
+	}
+
+	for _, s := range localSkills {
+		key := "local:" + s.Path
+		// Extract the tool dir name for the label: /proj/.claude/skills/my-skill → ".claude"
+		// Path structure: <projectDir>/<toolLocalPath>/<skillName>
+		// toolLocalPath examples: ".claude/skills", ".kiro/skills"
+		// So Dir(Dir(Path)) = <projectDir>/<toolDir>, Base of that = .<toolName>
+		toolDirName := filepath.Base(filepath.Dir(filepath.Dir(s.Path)))
+		label := fmt.Sprintf("%s (%s)", s.Name, toolDirName)
+		opts = append(opts, huh.NewOption(label, key))
+	}
+
+	return opts
+}
+
+// resolveSkillPath maps an option key produced by buildMergedSkillOptions back
+// to the absolute path of the skill directory.
+// Key format: "registry:<name>" or "local:<abs-path>"
+func resolveSkillPath(key string, regSkills []registry.Skill, localSkills []projectSkill) (string, error) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid skill key %q", key)
+	}
+	prefix, value := parts[0], parts[1]
+
+	switch prefix {
+	case "registry":
+		for _, s := range regSkills {
+			if s.Name == value {
+				return s.Path, nil
+			}
+		}
+		return "", fmt.Errorf("skill %q not found in registry", value)
+
+	case "local":
+		// value is the absolute path; look up in localSkills to verify it's known
+		for _, s := range localSkills {
+			if s.Path == value {
+				return s.Path, nil
+			}
+		}
+		return "", fmt.Errorf("local skill path %q not found", value)
+
+	default:
+		return "", fmt.Errorf("unknown skill key prefix %q in %q", prefix, key)
+	}
 }
 
 // buildSkillOptions converts registry skills into huh multi-select options.

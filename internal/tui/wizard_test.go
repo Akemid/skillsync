@@ -394,8 +394,12 @@ func TestReadSkillsFromDir(t *testing.T) {
 // TestRunExportWizard_EmptyRegistry verifies that runExportWizard returns an
 // error (not a panic) when no local skills are available.
 func TestRunExportWizard_EmptyRegistry(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Tools:        []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+	}
 	reg := &registry.Registry{Skills: []registry.Skill{}}
-	err := runExportWizard(reg)
+	err := runExportWizard(cfg, reg, "")
 	if err == nil {
 		t.Fatal("runExportWizard() error = nil, want error for empty registry")
 	}
@@ -414,7 +418,7 @@ func TestRunShareSkillWizard_EmptyRegistryNoSkills(t *testing.T) {
 	reg := &registry.Registry{Skills: []registry.Skill{}}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 
-	err := runShareSkillWizard(cfg, reg, configPath)
+	err := runShareSkillWizard(cfg, reg, configPath, "")
 	if err == nil {
 		t.Fatal("runShareSkillWizard() error = nil, want error for empty registry")
 	}
@@ -483,6 +487,10 @@ func TestRunImportWizard_NoPanic(t *testing.T) {
 // panic when at least one skill is present (bypassing the early-exit guard).
 // In non-TTY mode huh returns a program error; we only assert no panic.
 func TestRunExportWizard_WithSkills_NoPanic(t *testing.T) {
+	cfg := &config.Config{
+		RegistryPath: t.TempDir(),
+		Tools:        []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+	}
 	reg := &registry.Registry{
 		Skills: []registry.Skill{
 			{Name: "smoke-skill", Path: "/tmp/smoke-skill"},
@@ -496,7 +504,7 @@ func TestRunExportWizard_WithSkills_NoPanic(t *testing.T) {
 	}()
 
 	// Will return an error from huh (no TTY) — we just ensure it doesn't panic
-	_ = runExportWizard(reg)
+	_ = runExportWizard(cfg, reg, "")
 }
 
 // ---------------------------------------------------------------------------
@@ -598,7 +606,7 @@ func TestDiscoverProjectSkills(t *testing.T) {
 				if got[i].Name != want.Name {
 					t.Errorf("[%d] Name = %q, want %q", i, got[i].Name, want.Name)
 				}
-				if got[i].Path != want.Path {
+				if want.Path != "" && got[i].Path != want.Path {
 					t.Errorf("[%d] Path = %q, want %q", i, got[i].Path, want.Path)
 				}
 				if got[i].ToolName != want.ToolName {
@@ -607,6 +615,97 @@ func TestDiscoverProjectSkills(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// buildMergedSkillOptions + resolveSkillPath
+// ---------------------------------------------------------------------------
+
+func TestBuildMergedSkillOptions(t *testing.T) {
+	regSkills := []registry.Skill{
+		{Name: "go-testing", Path: "/reg/go-testing"},
+	}
+	localSkills := []projectSkill{
+		{Name: "my-skill", Path: "/proj/.claude/skills/my-skill", ToolName: "claude"},
+	}
+
+	opts := buildMergedSkillOptions(regSkills, localSkills)
+
+	// Expect 2 options: one registry, one local
+	if len(opts) != 2 {
+		t.Fatalf("len(opts) = %d, want 2; opts = %v", len(opts), opts)
+	}
+
+	// Registry option: key = "registry:go-testing", label = "go-testing (registry)"
+	if opts[0].Value != "registry:go-testing" {
+		t.Errorf("opts[0].Value = %q, want %q", opts[0].Value, "registry:go-testing")
+	}
+	if opts[0].Key != "go-testing (registry)" {
+		t.Errorf("opts[0].Key = %q, want %q", opts[0].Key, "go-testing (registry)")
+	}
+
+	// Local option: key = "local:/proj/.claude/skills/my-skill", label = "my-skill (.claude)"
+	if opts[1].Value != "local:/proj/.claude/skills/my-skill" {
+		t.Errorf("opts[1].Value = %q, want %q", opts[1].Value, "local:/proj/.claude/skills/my-skill")
+	}
+	if opts[1].Key != "my-skill (.claude)" {
+		t.Errorf("opts[1].Key = %q, want %q", opts[1].Key, "my-skill (.claude)")
+	}
+}
+
+func TestResolveSkillPath_Registry(t *testing.T) {
+	regSkills := []registry.Skill{
+		{Name: "go-testing", Path: "/reg/go-testing"},
+	}
+	localSkills := []projectSkill{}
+
+	t.Run("registry key resolves to skill path", func(t *testing.T) {
+		path, err := resolveSkillPath("registry:go-testing", regSkills, localSkills)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if path != "/reg/go-testing" {
+			t.Errorf("path = %q, want %q", path, "/reg/go-testing")
+		}
+	})
+
+	t.Run("missing skill in registry returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("registry:missing", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for missing registry skill, got nil")
+		}
+	})
+}
+
+func TestResolveSkillPath_Local(t *testing.T) {
+	regSkills := []registry.Skill{}
+	localSkills := []projectSkill{
+		{Name: "my-skill", Path: "/proj/.claude/skills/my-skill", ToolName: "claude"},
+	}
+
+	t.Run("local key resolves to path", func(t *testing.T) {
+		path, err := resolveSkillPath("local:/proj/.claude/skills/my-skill", regSkills, localSkills)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if path != "/proj/.claude/skills/my-skill" {
+			t.Errorf("path = %q, want %q", path, "/proj/.claude/skills/my-skill")
+		}
+	})
+
+	t.Run("local key with nonexistent path returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("local:/does/not/exist/skill", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for nonexistent local path, got nil")
+		}
+	})
+
+	t.Run("bad key prefix returns error", func(t *testing.T) {
+		_, err := resolveSkillPath("unknown:something", regSkills, localSkills)
+		if err == nil {
+			t.Fatal("expected error for unknown key prefix, got nil")
+		}
+	})
 }
 
 // TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped verifies that a skill
