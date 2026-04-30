@@ -19,6 +19,81 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// projectSkill represents a skill discovered in a project-local tool directory.
+type projectSkill struct {
+	Name     string
+	Path     string
+	ToolName string
+}
+
+// discoverProjectSkills scans each tool's LocalPath under projectDir and returns
+// all skills found. Skills that are symlinks resolving into the central registry
+// (regPath) are skipped. Results are deduplicated by local directory.
+func discoverProjectSkills(projectDir string, tools []config.Tool, regPath string) []projectSkill {
+	if projectDir == "" {
+		return nil
+	}
+
+	registryAbs := filepath.Clean(config.ExpandPath(regPath))
+	seenLocalDirs := make(map[string]bool)
+	var results []projectSkill
+
+	for _, tool := range tools {
+		if tool.LocalPath == "" {
+			continue
+		}
+		absLocalDir := filepath.Join(projectDir, tool.LocalPath)
+		absLocalDir = filepath.Clean(absLocalDir)
+
+		// Deduplicate tools that share the same LocalPath
+		if seenLocalDirs[absLocalDir] {
+			continue
+		}
+		seenLocalDirs[absLocalDir] = true
+
+		entries, err := os.ReadDir(absLocalDir)
+		if err != nil {
+			// Directory doesn't exist or not readable — skip
+			continue
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			skillName := entry.Name()
+			if strings.HasPrefix(skillName, ".") {
+				continue
+			}
+
+			skillPath := filepath.Join(absLocalDir, skillName)
+
+			// If it's a symlink, resolve it and skip if it points into the registry
+			resolved, err := filepath.EvalSymlinks(skillPath)
+			if err == nil {
+				if strings.HasPrefix(filepath.Clean(resolved), registryAbs+string(filepath.Separator)) ||
+					filepath.Clean(resolved) == registryAbs {
+					continue
+				}
+				skillPath = resolved
+			}
+
+			// Verify SKILL.md exists
+			if _, err := os.Stat(filepath.Join(skillPath, "SKILL.md")); err != nil {
+				continue
+			}
+
+			results = append(results, projectSkill{
+				Name:     skillName,
+				Path:     skillPath,
+				ToolName: tool.Name,
+			})
+		}
+	}
+
+	return results
+}
+
 const banner = `
    _____ __   _ _________                 
   / ___// /__(_) / / ___/__  ______  _____

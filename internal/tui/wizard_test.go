@@ -499,6 +499,147 @@ func TestRunExportWizard_WithSkills_NoPanic(t *testing.T) {
 	_ = runExportWizard(reg)
 }
 
+// ---------------------------------------------------------------------------
+// discoverProjectSkills
+// ---------------------------------------------------------------------------
+
+func TestDiscoverProjectSkills(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupDir   func(t *testing.T) string // returns projectDir; empty string = skip mkdir
+		tools      []config.Tool
+		regPath    string
+		wantLen    int
+		wantSkills []projectSkill // nil means don't check contents, just length
+	}{
+		{
+			name: "empty projectDir returns empty",
+			setupDir: func(t *testing.T) string {
+				return ""
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 0,
+		},
+		{
+			name: "SKILL.md present returns skill with correct fields",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				skillDir := filepath.Join(dir, ".claude", "skills", "my-skill")
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+					[]byte("---\nname: my-skill\n---\n"), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return dir
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 1,
+			wantSkills: []projectSkill{
+				{Name: "my-skill", ToolName: "claude"},
+			},
+		},
+		{
+			name: "subdir without SKILL.md is skipped",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// create dir without SKILL.md
+				noSkillDir := filepath.Join(dir, ".claude", "skills", "not-a-skill")
+				if err := os.MkdirAll(noSkillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				return dir
+			},
+			tools:   []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}},
+			regPath: t.TempDir(),
+			wantLen: 0,
+		},
+		{
+			name: "two tools sharing same LocalPath deduplicated to 1 result",
+			setupDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				// both kiro-ide and kiro-cli share .kiro/skills
+				skillDir := filepath.Join(dir, ".kiro", "skills", "shared-skill")
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+					[]byte("---\nname: shared-skill\n---\n"), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return dir
+			},
+			tools: []config.Tool{
+				{Name: "kiro-ide", LocalPath: ".kiro/skills"},
+				{Name: "kiro-cli", LocalPath: ".kiro/skills"},
+			},
+			regPath: t.TempDir(),
+			wantLen: 1,
+			wantSkills: []projectSkill{
+				{Name: "shared-skill", ToolName: "kiro-ide"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := tt.setupDir(t)
+			got := discoverProjectSkills(projectDir, tt.tools, tt.regPath)
+			if len(got) != tt.wantLen {
+				t.Fatalf("len = %d, want %d; got %v", len(got), tt.wantLen, got)
+			}
+			for i, want := range tt.wantSkills {
+				if i >= len(got) {
+					break
+				}
+				if got[i].Name != want.Name {
+					t.Errorf("[%d] Name = %q, want %q", i, got[i].Name, want.Name)
+				}
+				if got[i].Path != want.Path {
+					t.Errorf("[%d] Path = %q, want %q", i, got[i].Path, want.Path)
+				}
+				if got[i].ToolName != want.ToolName {
+					t.Errorf("[%d] ToolName = %q, want %q", i, got[i].ToolName, want.ToolName)
+				}
+			}
+		})
+	}
+}
+
+// TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped verifies that a skill
+// directory that is a symlink resolving into the registry is skipped.
+func TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped(t *testing.T) {
+	regDir := t.TempDir()
+	// real skill lives in registry
+	regSkillDir := filepath.Join(regDir, "reg-skill")
+	if err := os.MkdirAll(regSkillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll regSkill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(regSkillDir, "SKILL.md"),
+		[]byte("---\nname: reg-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	skillsDir := filepath.Join(projectDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll skillsDir: %v", err)
+	}
+	// symlink from project skill dir → registry skill dir
+	if err := os.Symlink(regSkillDir, filepath.Join(skillsDir, "reg-skill")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	tools := []config.Tool{{Name: "claude", LocalPath: ".claude/skills"}}
+	got := discoverProjectSkills(projectDir, tools, regDir)
+	if len(got) != 0 {
+		t.Errorf("expected 0 skills (symlink into registry should be skipped), got %d: %v", len(got), got)
+	}
+}
+
 func containsStrWiz(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {
