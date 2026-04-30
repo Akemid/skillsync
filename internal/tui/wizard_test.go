@@ -739,6 +739,27 @@ func TestDiscoverProjectSkills_SymlinkIntoRegistrySkipped(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ConfirmSelfSkillInstall smoke test
+// ---------------------------------------------------------------------------
+
+// TestConfirmSelfSkillInstall_NoPanic verifies that ConfirmSelfSkillInstall does not panic
+// in a non-TTY environment and returns false (not true) when the TUI cannot run.
+func TestConfirmSelfSkillInstall_NoPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ConfirmSelfSkillInstall() panicked: %v", r)
+		}
+	}()
+
+	// Non-TTY environment: huh.Confirm will fail gracefully
+	// Must not panic; must return false (not true) on TUI error
+	got := ConfirmSelfSkillInstall()
+	if got {
+		t.Error("expected false in non-TTY environment")
+	}
+}
+
 func containsStrWiz(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {
