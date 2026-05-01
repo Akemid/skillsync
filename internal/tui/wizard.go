@@ -1062,6 +1062,7 @@ func DetectInstalledTools(tools []config.Tool) []config.Tool {
 	for i := range updated {
 		globalPath := config.ExpandPath(updated[i].GlobalPath)
 		if seen[globalPath] {
+			updated[i].Enabled = false
 			continue
 		}
 		parentDir := strings.TrimSuffix(globalPath, "/skills")
