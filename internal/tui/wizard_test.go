@@ -760,6 +760,27 @@ func TestConfirmSelfSkillInstall_NoPanic(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// WizardResult.SelfSkillRequested
+// ---------------------------------------------------------------------------
+
+// TestWizardResult_SelfSkillRequestedDefault verifies that the zero value of
+// WizardResult has SelfSkillRequested == false.
+func TestWizardResult_SelfSkillRequestedDefault(t *testing.T) {
+	var r WizardResult
+	if r.SelfSkillRequested {
+		t.Error("WizardResult{}.SelfSkillRequested = true, want false")
+	}
+}
+
+// TestWizardResult_SelfSkillRequested verifies the field can be set and read back.
+func TestWizardResult_SelfSkillRequested(t *testing.T) {
+	r := WizardResult{SelfSkillRequested: true}
+	if !r.SelfSkillRequested {
+		t.Error("WizardResult{SelfSkillRequested: true}.SelfSkillRequested = false, want true")
+	}
+}
+
 func containsStrWiz(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {

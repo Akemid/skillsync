@@ -73,6 +73,24 @@ func run() error {
 		}
 	}
 
+	// Handle self-skill subcommand early (after config load, before registry scan)
+	if len(os.Args) > 2 && os.Args[1] == "self-skill" {
+		switch os.Args[2] {
+		case "install":
+			yesFlag := false
+			for _, arg := range os.Args[3:] {
+				if arg == "--yes" {
+					yesFlag = true
+				}
+			}
+			return cmdSelfSkillInstall(cfg, yesFlag)
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command: self-skill %s\n\n", os.Args[2])
+			printUsage()
+			return nil
+		}
+	}
+
 	// Auto-detect which tools are installed
 	cfg.Tools = tui.DetectInstalledTools(cfg.Tools)
 
@@ -135,6 +153,10 @@ func run() error {
 		return nil
 	}
 
+	if result.SelfSkillRequested {
+		return installSelfSkill(cfg, cfg.Tools, true)
+	}
+
 	// Resolve selected tools
 	var selectedTools []config.Tool
 	for _, name := range result.SelectedTools {
@@ -153,35 +175,44 @@ func run() error {
 	results := installer.Install(skills, selectedTools, result.Scope, result.ProjectDir)
 	tui.PrintResults(results)
 
-	// Self-skill install offer
+	return installSelfSkill(cfg, selectedTools, true)
+}
+
+// cmdSelfSkillInstall handles `skillsync self-skill install [--yes]`.
+// yesFlag skips the interactive confirmation prompt.
+func cmdSelfSkillInstall(cfg *config.Config, yesFlag bool) error {
+	return installSelfSkill(cfg, tui.DetectInstalledTools(cfg.Tools), !yesFlag)
+}
+
+// installSelfSkill extracts the embedded skillsync skill to the registry and
+// symlinks it to all provided tools at global scope.
+// If the skill is already installed with matching content it prints a notice and returns nil.
+// If interactive is true the user is prompted before installation proceeds.
+func installSelfSkill(cfg *config.Config, tools []config.Tool, interactive bool) error {
 	registryPath := config.ExpandPath(cfg.RegistryPath)
 	selfSkillDir := filepath.Join(registryPath, skillasset.SkillName)
 	selfSkillMD := filepath.Join(selfSkillDir, "SKILL.md")
 
-	alreadyInstalled := false
 	if existing, err := os.ReadFile(selfSkillMD); err == nil {
 		if bytes.Equal(existing, skillasset.Content()) {
-			alreadyInstalled = true
+			fmt.Println("skillsync skill already installed")
+			return nil
 		}
 	}
 
-	if !alreadyInstalled {
-		if tui.ConfirmSelfSkillInstall() {
-			if err := skillasset.ExtractTo(registryPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not extract skillsync skill: %v\n", err)
-			} else {
-				selfSkill := registry.Skill{Name: skillasset.SkillName, Path: selfSkillDir}
-				selfResults := installer.Install(
-					[]registry.Skill{selfSkill},
-					selectedTools,
-					installer.ScopeGlobal,
-					"",
-				)
-				tui.PrintResults(selfResults)
-			}
+	if interactive {
+		if !tui.ConfirmSelfSkillInstall() {
+			return nil
 		}
 	}
 
+	if err := skillasset.ExtractTo(registryPath); err != nil {
+		return fmt.Errorf("extracting self-skill: %w", err)
+	}
+
+	selfSkill := registry.Skill{Name: skillasset.SkillName, Path: selfSkillDir}
+	results := installer.Install([]registry.Skill{selfSkill}, tools, installer.ScopeGlobal, "")
+	tui.PrintResults(results)
 	return nil
 }
 
@@ -800,6 +831,7 @@ Usage:
   skillsync upload       	Upload a local skill to a registered tap
   skillsync export       	Export a skill to a .tar.gz archive
   skillsync import       	Import a skill from a .tar.gz archive
+  skillsync self-skill install	Install the skillsync skill into your registry
   skillsync help        	Show this help
 
 Flags:

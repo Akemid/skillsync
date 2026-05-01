@@ -129,11 +129,12 @@ var (
 
 // WizardResult holds the user's selections from the TUI wizard
 type WizardResult struct {
-	SkillsByBundle map[string][]string // skills grouped by bundle, for summary
-	SelectedSkills []string            // flattened + deduplicated, for installation
-	SelectedTools  []string
-	Scope          installer.Scope
-	ProjectDir     string
+	SkillsByBundle     map[string][]string // skills grouped by bundle, for summary
+	SelectedSkills     []string            // flattened + deduplicated, for installation
+	SelectedTools      []string
+	Scope              installer.Scope
+	ProjectDir         string
+	SelfSkillRequested bool // true when user chose "Install skillsync skill"
 }
 
 // newForm creates a themed form — DRY helper to avoid repeating WithTheme everywhere.
@@ -160,6 +161,8 @@ func RunWizard(cfg *config.Config, reg *registry.Registry, projectDir, configPat
 		return nil, runExportWizard(cfg, reg, projectDir)
 	case "import-skill":
 		return nil, runImportWizard(cfg)
+	case "self-skill":
+		return &WizardResult{SelfSkillRequested: true}, nil
 	}
 
 	result := &WizardResult{ProjectDir: projectDir, SkillsByBundle: make(map[string][]string)}
@@ -218,6 +221,7 @@ func askWizardMode() (string, error) {
 				Title("What do you want to do?").
 				Options(
 					huh.NewOption("Install skills", "install"),
+					huh.NewOption("Install skillsync skill", "self-skill"),
 					huh.NewOption("Add remote repository", "add-remote"),
 					huh.NewOption("Share a skill (tap)", "share-skill"),
 					huh.NewOption("Export skill to archive", "export-skill"),

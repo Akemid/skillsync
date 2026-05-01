@@ -55,6 +55,12 @@ All tools following the [Agent Skills](https://agentskills.io/) open standard:
 curl -fsSL https://raw.githubusercontent.com/Akemid/skillsync/main/install.sh | sh
 ```
 
+To also install the skillsync skill into your central registry (also installs the skillsync skill):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Akemid/skillsync/main/install.sh | sh -s -- --with-skill
+```
+
 ### Windows (PowerShell)
 
 ```powershell

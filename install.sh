@@ -4,6 +4,14 @@ set -e
 REPO="Akemid/skillsync"
 BINARY="skillsync"
 
+# Parse flags
+WITH_SKILL=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-skill) WITH_SKILL=1 ;;
+  esac
+done
+
 # Detect OS
 OS="$(uname -s)"
 case "${OS}" in
@@ -106,3 +114,11 @@ fi
 
 echo ""
 echo "skillsync ${VERSION} installed successfully → ${INSTALL_DIR}/${BINARY}"
+
+if [ "${WITH_SKILL}" = "1" ]; then
+  echo ""
+  echo "Installing skillsync skill..."
+  "${INSTALL_DIR}/${BINARY}" self-skill install --yes || {
+    echo "Warning: could not install skillsync skill (binary installed successfully)" >&2
+  }
+fi

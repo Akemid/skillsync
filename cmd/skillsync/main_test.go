@@ -11,6 +11,7 @@ import (
 	"github.com/Akemid/skillsync/internal/archive"
 	"github.com/Akemid/skillsync/internal/config"
 	"github.com/Akemid/skillsync/internal/registry"
+	"github.com/Akemid/skillsync/internal/skillasset"
 )
 
 func captureOutput(t *testing.T, fn func() error) (stdout string, stderr string, err error) {
@@ -663,5 +664,161 @@ func TestCmdImport_ErrorPaths(t *testing.T) {
 				t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// installSelfSkill
+// ---------------------------------------------------------------------------
+
+func TestInstallSelfSkill(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T) (registryPath string, tools []config.Tool)
+		wantErr   bool
+		wantMsg   string // substring expected in stdout
+		wantErrIn string // substring expected in error message
+	}{
+		{
+			name: "FreshInstall",
+			setup: func(t *testing.T) (string, []config.Tool) {
+				reg := t.TempDir()
+				toolDir := t.TempDir()
+				skillsDir := filepath.Join(toolDir, "skills")
+				if err := os.MkdirAll(skillsDir, 0755); err != nil {
+					t.Fatalf("MkdirAll skillsDir: %v", err)
+				}
+				tool := config.Tool{
+					Name:       "test-tool",
+					GlobalPath: skillsDir,
+					Enabled:    true,
+				}
+				return reg, []config.Tool{tool}
+			},
+			wantErr: false,
+		},
+		{
+			name: "AlreadyInstalled_ContentMatches",
+			setup: func(t *testing.T) (string, []config.Tool) {
+				reg := t.TempDir()
+				// Pre-write the exact embedded content
+				skillDir := filepath.Join(reg, skillasset.SkillName)
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), skillasset.Content(), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return reg, []config.Tool{}
+			},
+			wantErr: false,
+			wantMsg: "already installed",
+		},
+		{
+			name: "StaleContent_Overwrites",
+			setup: func(t *testing.T) (string, []config.Tool) {
+				reg := t.TempDir()
+				// Pre-write stale content
+				skillDir := filepath.Join(reg, skillasset.SkillName)
+				if err := os.MkdirAll(skillDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("outdated"), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				return reg, []config.Tool{}
+			},
+			wantErr: false,
+		},
+		{
+			name: "ExtractionError",
+			setup: func(t *testing.T) (string, []config.Tool) {
+				// Use a file as the registry path so os.MkdirAll inside ExtractTo fails
+				f, err := os.CreateTemp(t.TempDir(), "not-a-dir-*")
+				if err != nil {
+					t.Fatalf("CreateTemp: %v", err)
+				}
+				f.Close()
+				return f.Name(), []config.Tool{}
+			},
+			wantErr:   true,
+			wantErrIn: "extracting self-skill",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registryPath, tools := tt.setup(t)
+			cfg := &config.Config{RegistryPath: registryPath}
+
+			stdout, _, err := captureOutput(t, func() error {
+				return installSelfSkill(cfg, tools, false)
+			})
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("installSelfSkill() error = nil, want error")
+				}
+				if tt.wantErrIn != "" && !strings.Contains(err.Error(), tt.wantErrIn) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErrIn)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("installSelfSkill() unexpected error: %v", err)
+			}
+			if tt.wantMsg != "" && !strings.Contains(stdout, tt.wantMsg) {
+				t.Errorf("stdout = %q, want to contain %q", stdout, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cmdSelfSkillInstall
+// ---------------------------------------------------------------------------
+
+func TestCmdSelfSkillInstall_UnknownSubSubcommand(t *testing.T) {
+	cfg := &config.Config{RegistryPath: t.TempDir(), Tools: config.DefaultTools()}
+
+	oldArgs := os.Args
+	os.Args = []string{"skillsync", "self-skill", "foo"}
+	defer func() { os.Args = oldArgs }()
+
+	_, stderr, err := captureOutput(t, func() error {
+		return cmdSelfSkillInstall(cfg, false)
+	})
+	_ = stderr
+
+	if err != nil {
+		t.Fatalf("cmdSelfSkillInstall() error = %v, want nil", err)
+	}
+}
+
+func TestCmdSelfSkillInstall_YesFlagParsed(t *testing.T) {
+	reg := t.TempDir()
+	toolDir := t.TempDir()
+	skillsDir := filepath.Join(toolDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg := &config.Config{
+		RegistryPath: reg,
+		Tools: []config.Tool{
+			{Name: "test-tool", GlobalPath: skillsDir, Enabled: true},
+		},
+	}
+
+	oldArgs := os.Args
+	os.Args = []string{"skillsync", "self-skill", "install", "--yes"}
+	defer func() { os.Args = oldArgs }()
+
+	_, _, err := captureOutput(t, func() error {
+		return cmdSelfSkillInstall(cfg, true)
+	})
+	if err != nil {
+		t.Fatalf("cmdSelfSkillInstall(yesFlag=true) error = %v, want nil", err)
 	}
 }
