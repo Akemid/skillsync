@@ -796,6 +796,33 @@ func TestCmdSelfSkillInstall_UnknownSubSubcommand(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// parseSkillRef
+// ---------------------------------------------------------------------------
+
+func TestParseSkillRef(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantBundle string
+		wantName   string
+	}{
+		{input: "my-skill", wantBundle: "", wantName: "my-skill"},
+		{input: "acme:go-testing", wantBundle: "acme", wantName: "go-testing"},
+		{input: "a:b:c", wantBundle: "a", wantName: "b:c"},
+		{input: "", wantBundle: "", wantName: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			gotBundle, gotName := parseSkillRef(tt.input)
+			if gotBundle != tt.wantBundle || gotName != tt.wantName {
+				t.Errorf("parseSkillRef(%q) = (%q, %q), want (%q, %q)",
+					tt.input, gotBundle, gotName, tt.wantBundle, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestCmdSelfSkillInstall_YesFlagParsed(t *testing.T) {
 	reg := t.TempDir()
 	toolDir := t.TempDir()
@@ -820,5 +847,92 @@ func TestCmdSelfSkillInstall_YesFlagParsed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("cmdSelfSkillInstall(yesFlag=true) error = %v, want nil", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W3 — cmdInstall error paths (flag validation, scope, tool, bundle)
+// ---------------------------------------------------------------------------
+
+// buildRegistryWithSkill creates a temp registry with one skill and returns the registry and its path.
+func buildRegistryWithSkill(t *testing.T, skillName string) (*registry.Registry, string) {
+	t.Helper()
+	registryPath := t.TempDir()
+	skillDir := filepath.Join(registryPath, skillName)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll skill dir: %v", err)
+	}
+	skillMD := "---\nname: " + skillName + "\ndescription: test skill\n---\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatalf("WriteFile SKILL.md: %v", err)
+	}
+	reg := registry.New(registryPath)
+	if err := reg.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	return reg, registryPath
+}
+
+func TestCmdInstall_ErrorPaths(t *testing.T) {
+	reg, registryPath := buildRegistryWithSkill(t, "my-skill")
+
+	tests := []struct {
+		name    string
+		args    []string
+		cfg     *config.Config
+		wantErr string
+	}{
+		{
+			name:    "no flags — usage error",
+			args:    []string{"skillsync", "install"},
+			cfg:     &config.Config{RegistryPath: registryPath, Tools: config.DefaultTools()},
+			wantErr: "usage: skillsync install",
+		},
+		{
+			name:    "only --yes — no skill or bundle",
+			args:    []string{"skillsync", "install", "--yes"},
+			cfg:     &config.Config{RegistryPath: registryPath, Tools: config.DefaultTools()},
+			wantErr: "usage: skillsync install",
+		},
+		{
+			name:    "invalid scope",
+			args:    []string{"skillsync", "install", "--skill", "my-skill", "--scope", "staging"},
+			cfg:     &config.Config{RegistryPath: registryPath, Tools: config.DefaultTools()},
+			wantErr: "invalid scope",
+		},
+		{
+			name:    "unknown tool",
+			args:    []string{"skillsync", "install", "--skill", "my-skill", "--tool", "ghost-editor"},
+			cfg:     &config.Config{RegistryPath: registryPath, Tools: config.DefaultTools()},
+			wantErr: "unknown tool",
+		},
+		{
+			name: "bundle not configured",
+			args: []string{"skillsync", "install", "--bundle", "not-configured"},
+			cfg: &config.Config{
+				RegistryPath: registryPath,
+				Bundles:      []config.Bundle{{Name: "other-bundle"}},
+				Tools:        config.DefaultTools(),
+			},
+			wantErr: "not configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldArgs := os.Args
+			os.Args = tt.args
+			defer func() { os.Args = oldArgs }()
+
+			_, _, err := captureOutput(t, func() error {
+				return cmdInstall(tt.cfg, reg, t.TempDir())
+			})
+			if err == nil {
+				t.Fatalf("cmdInstall() error = nil, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }

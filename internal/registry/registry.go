@@ -22,6 +22,7 @@ type Skill struct {
 	Description string
 	Path        string   // absolute path to the skill folder
 	Files       []string // list of files in the skill folder
+	Bundle      string   // "" for local skills; bundle name for remote skills
 }
 
 // Registry manages skills from a central directory
@@ -61,7 +62,7 @@ func (r *Registry) Discover(bundles ...config.Bundle) error {
 			continue
 		}
 		skillPath := filepath.Join(r.BasePath, entry.Name())
-		skill := r.scanSkillDir(skillPath, entry.Name())
+		skill := r.scanSkillDir(skillPath, entry.Name(), "")
 		r.Skills = append(r.Skills, skill)
 	}
 
@@ -84,7 +85,7 @@ func (r *Registry) Discover(bundles ...config.Bundle) error {
 						continue
 					}
 					skillPath := filepath.Join(bundlePath, skillEntry.Name())
-					skill := r.scanSkillDir(skillPath, skillEntry.Name())
+					skill := r.scanSkillDir(skillPath, skillEntry.Name(), bundleEntry.Name())
 					r.Skills = append(r.Skills, skill)
 				}
 			}
@@ -95,13 +96,15 @@ func (r *Registry) Discover(bundles ...config.Bundle) error {
 	return nil
 }
 
-// scanSkillDir scans a single skill directory and returns a Skill
-func (r *Registry) scanSkillDir(skillPath, skillName string) Skill {
+// scanSkillDir scans a single skill directory and returns a Skill.
+// bundle is "" for local skills and the bundle directory name for remote skills.
+func (r *Registry) scanSkillDir(skillPath, skillName, bundle string) Skill {
 	skillMD := filepath.Join(skillPath, "SKILL.md")
 
 	skill := Skill{
-		Name: skillName,
-		Path: skillPath,
+		Name:   skillName,
+		Path:   skillPath,
+		Bundle: bundle,
 	}
 
 	// Try to read SKILL.md for metadata
@@ -119,6 +122,29 @@ func (r *Registry) scanSkillDir(skillPath, skillName string) Skill {
 	}
 
 	return skill
+}
+
+// FindByBundleAndName returns the first skill where Bundle == bundle AND Name == name.
+// Returns (Skill{}, false) if not found.
+func (r *Registry) FindByBundleAndName(bundle, name string) (Skill, bool) {
+	for _, s := range r.Skills {
+		if s.Bundle == bundle && s.Name == name {
+			return s, true
+		}
+	}
+	return Skill{}, false
+}
+
+// FindByBundle returns all skills where Bundle == bundle.
+// Returns nil (not []Skill{}) when none match.
+func (r *Registry) FindByBundle(bundle string) []Skill {
+	var result []Skill
+	for _, s := range r.Skills {
+		if s.Bundle == bundle {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // FindByNames returns skills matching the given names

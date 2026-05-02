@@ -317,16 +317,206 @@ description: Skill from bundle 2
 		t.Fatalf("got %d skills, want 2", len(reg.Skills))
 	}
 
-	names := make(map[string]bool)
+	// Index by name for deterministic assertions
+	byName := make(map[string]Skill)
 	for _, skill := range reg.Skills {
-		names[skill.Name] = true
+		byName[skill.Name] = skill
 	}
 
-	if !names["skill-1"] {
+	if _, ok := byName["skill-1"]; !ok {
 		t.Error("skill-1 not found")
 	}
-	if !names["skill-2"] {
+	if _, ok := byName["skill-2"]; !ok {
 		t.Error("skill-2 not found")
+	}
+
+	// W2 fix: assert Bundle values are correct per skill
+	if got := byName["skill-1"].Bundle; got != "bundle-1" {
+		t.Errorf("skill-1 Bundle = %q, want %q", got, "bundle-1")
+	}
+	if got := byName["skill-2"].Bundle; got != "bundle-2" {
+		t.Errorf("skill-2 Bundle = %q, want %q", got, "bundle-2")
+	}
+}
+
+// TestFindByBundleAndName verifies exact bundle+name lookup.
+func TestFindByBundleAndName(t *testing.T) {
+	acmeSkill := Skill{Name: "go-testing", Bundle: "acme", Path: "/fake/acme/go-testing"}
+	localSkill := Skill{Name: "local-s", Bundle: "", Path: "/fake/local-s"}
+
+	tests := []struct {
+		name       string
+		registry   Registry
+		bundle     string
+		skillName  string
+		wantSkill  Skill
+		wantFound  bool
+	}{
+		{
+			name:      "found in bundle",
+			registry:  Registry{Skills: []Skill{acmeSkill}},
+			bundle:    "acme",
+			skillName: "go-testing",
+			wantSkill: acmeSkill,
+			wantFound: true,
+		},
+		{
+			name:      "wrong bundle",
+			registry:  Registry{Skills: []Skill{acmeSkill}},
+			bundle:    "other",
+			skillName: "go-testing",
+			wantSkill: Skill{},
+			wantFound: false,
+		},
+		{
+			name:      "local skill with empty bundle",
+			registry:  Registry{Skills: []Skill{localSkill}},
+			bundle:    "",
+			skillName: "local-s",
+			wantSkill: localSkill,
+			wantFound: true,
+		},
+		{
+			name:      "empty registry",
+			registry:  Registry{},
+			bundle:    "acme",
+			skillName: "go-testing",
+			wantSkill: Skill{},
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := tt.registry.FindByBundleAndName(tt.bundle, tt.skillName)
+			if ok != tt.wantFound {
+				t.Errorf("FindByBundleAndName() found = %v, want %v", ok, tt.wantFound)
+			}
+			if got.Name != tt.wantSkill.Name || got.Bundle != tt.wantSkill.Bundle || got.Path != tt.wantSkill.Path {
+				t.Errorf("FindByBundleAndName() skill = %+v, want %+v", got, tt.wantSkill)
+			}
+		})
+	}
+}
+
+// TestFindByBundle verifies that FindByBundle returns matching skills.
+func TestFindByBundle(t *testing.T) {
+	fe1 := Skill{Name: "react-patterns", Bundle: "frontend-cen", Path: "/fake/react-patterns"}
+	fe2 := Skill{Name: "ts-strict", Bundle: "frontend-cen", Path: "/fake/ts-strict"}
+	be1 := Skill{Name: "go-testing", Bundle: "backend-cen", Path: "/fake/go-testing"}
+	loc1 := Skill{Name: "local-a", Bundle: "", Path: "/fake/local-a"}
+	loc2 := Skill{Name: "local-b", Bundle: "", Path: "/fake/local-b"}
+
+	tests := []struct {
+		name     string
+		registry Registry
+		bundle   string
+		wantLen  int
+		wantNil  bool
+	}{
+		{
+			name:     "two skills in frontend-cen, one in backend-cen",
+			registry: Registry{Skills: []Skill{fe1, fe2, be1}},
+			bundle:   "frontend-cen",
+			wantLen:  2,
+			wantNil:  false,
+		},
+		{
+			name:     "local skills with empty bundle",
+			registry: Registry{Skills: []Skill{loc1, loc2, be1}},
+			bundle:   "",
+			wantLen:  2,
+			wantNil:  false,
+		},
+		{
+			name:     "no match returns nil",
+			registry: Registry{Skills: []Skill{fe1, be1}},
+			bundle:   "nonexistent",
+			wantLen:  0,
+			wantNil:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.registry.FindByBundle(tt.bundle)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("FindByBundle() = %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != tt.wantLen {
+				t.Errorf("FindByBundle() len = %d, want %d", len(got), tt.wantLen)
+			}
+		})
+	}
+}
+
+// TestDiscover_BundleField verifies that Bundle is populated correctly for local and remote skills.
+func TestDiscover_BundleField(t *testing.T) {
+	skillMD := "---\nname: skill-name\ndescription: test\n---\n"
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, base string)
+		skillName  string
+		wantBundle string
+	}{
+		{
+			name: "local",
+			setup: func(t *testing.T, base string) {
+				dir := filepath.Join(base, "local-skill")
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			},
+			skillName:  "local-skill",
+			wantBundle: "",
+		},
+		{
+			name: "remote",
+			setup: func(t *testing.T, base string) {
+				dir := filepath.Join(base, "_remote", "acme", "remote-skill")
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			},
+			skillName:  "remote-skill",
+			wantBundle: "acme",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			tt.setup(t, base)
+
+			reg := New(base)
+			if err := reg.Discover(); err != nil {
+				t.Fatalf("Discover() error = %v, want nil", err)
+			}
+
+			var found *Skill
+			for i := range reg.Skills {
+				if reg.Skills[i].Name == tt.skillName {
+					found = &reg.Skills[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("skill %q not found after Discover()", tt.skillName)
+			}
+			if found.Bundle != tt.wantBundle {
+				t.Errorf("Bundle = %q, want %q", found.Bundle, tt.wantBundle)
+			}
+		})
 	}
 }
 

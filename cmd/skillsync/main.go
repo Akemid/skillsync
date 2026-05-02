@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Akemid/skillsync/internal/archive"
@@ -100,7 +101,10 @@ func run() error {
 		return fmt.Errorf("scanning skill registry: %w", err)
 	}
 
-	if len(reg.Skills) == 0 {
+	// Skip the empty-registry guard for "install": cmdInstall re-discovers after auto-sync,
+	// so it must be allowed to run even when the registry is empty (REQ-18).
+	isInstall := len(os.Args) > 1 && os.Args[1] == "install"
+	if !isInstall && len(reg.Skills) == 0 {
 		return fmt.Errorf("no skills found in registry at %s\nAdd skills to your registry or update registry_path in %s",
 			config.ExpandPath(cfg.RegistryPath), configPath)
 	}
@@ -121,6 +125,8 @@ func run() error {
 			return cmdUpgradeConfig(configPath)
 		case "remote":
 			return cmdRemote(cfg, configPath)
+		case "install":
+			return cmdInstall(cfg, reg, projectDir)
 		case "uninstall":
 			return cmdUninstall(cfg, reg, projectDir)
 		case "tap":
@@ -812,6 +818,248 @@ func trimLeft(s string) string {
 	return s[i:]
 }
 
+// cmdInstall handles `skillsync install --skill <ref> [--bundle <name>] [--tool <name>] [--scope global|project] [--yes]`.
+// It is non-interactive: no TUI wizard is shown. Skills are resolved from the registry and installed directly.
+func cmdInstall(cfg *config.Config, reg *registry.Registry, projectDir string) error {
+	// Step 1: Parse flags from os.Args[2:]
+	args := os.Args[2:]
+	var skillFlags []string
+	var bundleFlag string
+	var toolFlags []string
+	scopeFlag := "global"
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--skill":
+			if i+1 < len(args) {
+				i++
+				skillFlags = append(skillFlags, args[i])
+			}
+		case "--bundle":
+			if i+1 < len(args) {
+				i++
+				bundleFlag = args[i]
+			}
+		case "--tool":
+			if i+1 < len(args) {
+				i++
+				toolFlags = append(toolFlags, args[i])
+			}
+		case "--scope":
+			if i+1 < len(args) {
+				i++
+				scopeFlag = args[i]
+			}
+		case "--yes":
+			// no-op: forward compatibility
+		}
+	}
+
+	// Step 2: Validate at least one skill or bundle provided
+	if len(skillFlags) == 0 && bundleFlag == "" {
+		return fmt.Errorf("usage: skillsync install --skill <name> [--bundle <bundle>] [--tool <tool>] [--scope global|project]")
+	}
+
+	// Step 3: Validate scope (before any I/O)
+	if scopeFlag != "global" && scopeFlag != "project" {
+		return fmt.Errorf("invalid scope %q: must be \"global\" or \"project\"", scopeFlag)
+	}
+
+	// Step 4: Validate tools (before any I/O)
+	var resolvedTools []config.Tool
+	if len(toolFlags) > 0 {
+		for _, name := range toolFlags {
+			found := false
+			for _, t := range cfg.Tools {
+				if t.Name == name {
+					resolvedTools = append(resolvedTools, t)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("unknown tool %q", name)
+			}
+		}
+	} else {
+		resolvedTools = tui.DetectInstalledTools(cfg.Tools)
+	}
+
+	// Step 5: Collect bundle names that may need syncing
+	var bundlesToSync []string
+	for _, s := range skillFlags {
+		b, _ := parseSkillRef(s)
+		if b != "" {
+			bundlesToSync = append(bundlesToSync, b)
+		}
+	}
+	if bundleFlag != "" {
+		bundlesToSync = append(bundlesToSync, bundleFlag)
+	}
+
+	// Step 6: Auto-sync remote bundles if needed
+	if err := syncRemoteBundlesIfNeeded(cfg, bundlesToSync); err != nil {
+		return err
+	}
+
+	// Step 7: Re-discover registry (after any sync)
+	if err := reg.Discover(cfg.Bundles...); err != nil {
+		return fmt.Errorf("scanning skill registry: %w", err)
+	}
+
+	// Dedup skills by Path
+	seenPaths := make(map[string]bool)
+	var resolvedSkills []registry.Skill
+
+	addSkill := func(s registry.Skill) {
+		if !seenPaths[s.Path] {
+			seenPaths[s.Path] = true
+			resolvedSkills = append(resolvedSkills, s)
+		}
+	}
+
+	// Step 8: Resolve --bundle flag
+	if bundleFlag != "" {
+		// Validate it's configured
+		bundleConfigured := false
+		for _, b := range cfg.Bundles {
+			if b.Name == bundleFlag {
+				bundleConfigured = true
+				break
+			}
+		}
+		if !bundleConfigured {
+			return fmt.Errorf("bundle %q not configured", bundleFlag)
+		}
+
+		bundleSkills := reg.FindByBundle(bundleFlag)
+		for _, s := range bundleSkills {
+			addSkill(s)
+		}
+	}
+
+	// Step 9: Resolve each --skill flag
+	for _, s := range skillFlags {
+		bundle, name := parseSkillRef(s)
+		if bundle != "" {
+			skill, ok := reg.FindByBundleAndName(bundle, name)
+			if !ok {
+				return fmt.Errorf("skill %q not found in bundle %q", name, bundle)
+			}
+			addSkill(skill)
+		} else {
+			// Plain name: collect all skills with this name
+			var matches []registry.Skill
+			for _, sk := range reg.Skills {
+				if sk.Name == name {
+					matches = append(matches, sk)
+				}
+			}
+			switch len(matches) {
+			case 0:
+				return fmt.Errorf("skill %q not found in registry", name)
+			case 1:
+				addSkill(matches[0])
+			default:
+				// Ambiguous: list bundles and instruct bundle:skill syntax
+				var bundles []string
+				for _, m := range matches {
+					if m.Bundle != "" {
+						bundles = append(bundles, m.Bundle)
+					} else {
+						bundles = append(bundles, "(local)")
+					}
+				}
+				return fmt.Errorf("skill %q is ambiguous — found in bundles: %s\nuse bundle:skill syntax (e.g. %s:%s)",
+					name, strings.Join(bundles, ", "), bundles[0], name)
+			}
+		}
+	}
+
+	// Step 10: Map scope string to installer.Scope
+	var scope installer.Scope
+	if scopeFlag == "project" {
+		scope = installer.ScopeProject
+	} else {
+		scope = installer.ScopeGlobal
+	}
+
+	// Step 11: Install
+	results := installer.Install(resolvedSkills, resolvedTools, scope, projectDir)
+
+	// Step 12: Print results
+	tui.PrintResults(results)
+
+	return nil
+}
+
+// syncRemoteBundlesIfNeeded auto-syncs any remote bundles that haven't been cloned yet.
+// bundleNames is the list of bundle names referenced by the install command.
+// Bundles without a Source (local-only) are skipped. Bundles whose _remote/{name}/ dir
+// already exists are also skipped (already synced).
+func syncRemoteBundlesIfNeeded(cfg *config.Config, bundleNames []string) error {
+	// Build map of remote bundles (those with Source != nil)
+	bundleByName := make(map[string]config.Bundle)
+	for _, b := range cfg.Bundles {
+		if b.Source != nil {
+			bundleByName[b.Name] = b
+		}
+	}
+
+	registryAbs := config.ExpandPath(cfg.RegistryPath)
+	remoteBase := filepath.Join(registryAbs, "_remote")
+
+	for _, name := range bundleNames {
+		b, ok := bundleByName[name]
+		if !ok {
+			// Local bundle — no sync needed
+			continue
+		}
+
+		remoteBundleDir := filepath.Join(remoteBase, name)
+		if b.Source.Path != "" {
+			remoteBundleDir = filepath.Join(remoteBundleDir, b.Source.Path)
+		}
+
+		if _, err := os.Stat(remoteBundleDir); err == nil {
+			// Already synced
+			continue
+		}
+
+		fmt.Printf("  Syncing %s from %s...\n", name, b.Source.URL)
+
+		syncer, err := sync.New(remoteBase)
+		if err != nil {
+			return fmt.Errorf("auto-sync failed for bundle %q: %w", name, err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		syncErr := syncer.SyncBundle(ctx, name, b.Source.URL, b.Source.Branch)
+		cancel()
+
+		if syncErr != nil {
+			return fmt.Errorf("auto-sync failed for bundle %q: %w", name, syncErr)
+		}
+
+		fmt.Printf("  ✓ %s synced\n", name)
+	}
+
+	return nil
+}
+
+// parseSkillRef splits a skill reference into (bundle, name).
+// "my-skill" → ("", "my-skill")
+// "acme:go-testing" → ("acme", "go-testing")
+// "a:b:c" → ("a", "b:c")
+// "" → ("", "")
+func parseSkillRef(s string) (bundle, name string) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", parts[0]
+}
+
 func printUsage() {
 	fmt.Println(`skillsync — AI Agent Skills Installer
 
@@ -823,6 +1071,7 @@ Usage:
   skillsync upgrade-config 	Migrate existing config safely
   skillsync remote list  	List configured remote bundles
   skillsync remote add  	Add a remote bundle to config
+  skillsync install    	Install skills non-interactively
   skillsync uninstall   	Remove a skill symlink
   skillsync init        	Generate default config file
   skillsync tap add      	Register a writable git repo (tap) for uploading skills
