@@ -319,3 +319,100 @@ skillsync import my-skill.tar.gz
 skillsync uninstall my-skill          # removes global symlinks
 skillsync uninstall my-skill --project # removes project-local symlinks
 ```
+
+## Private Repositories
+
+skillsync supports private Git repositories for both remote bundles and taps. Authentication is handled via SSH keys.
+
+### Config example
+
+```yaml
+# Private bundle via SSH
+bundles:
+  - name: private-skills
+    ssh_key: ~/.ssh/id_ed25519     # path to SSH private key
+    source:
+      type: git
+      url: git@github.com:org/private-skills.git
+      branch: main
+
+# Private tap via SSH
+taps:
+  - name: private-tap
+    url: git@github.com:org/private-tap.git
+    branch: main
+    ssh_key: ~/.ssh/id_ed25519     # path to SSH private key
+```
+
+When `ssh_key` is set and the URL is an SSH URL (`git@...`), skillsync runs `ssh-add <key>` before any git operation to load the key into the agent.
+
+### Passphrase-protected keys
+
+If your key has a passphrase, add it to the agent manually first:
+
+```bash
+ssh-add ~/.ssh/id_ed25519
+# Enter passphrase when prompted
+```
+
+Then run `skillsync sync` or `skillsync upload`. The key is already in the agent — `ssh_key` in config is optional for already-loaded keys.
+
+### Non-interactive contexts (CI / agents)
+
+In CI or agent contexts where no terminal is available, use a deploy key **without a passphrase**:
+
+```bash
+# Generate a deploy key without passphrase
+ssh-keygen -t ed25519 -f ~/.ssh/deploy_key -N ""
+
+# Add the public key to the GitHub repo as a deploy key
+cat ~/.ssh/deploy_key.pub
+# GitHub → repo → Settings → Deploy keys → Add deploy key
+
+# Set in config
+ssh_key: ~/.ssh/deploy_key
+```
+
+### File permissions
+
+SSH keys must have restricted permissions or `ssh-add` will reject them:
+
+```bash
+chmod 600 ~/.ssh/id_ed25519
+```
+
+### Verify SSH connectivity
+
+Test that your key works before running skillsync:
+
+```bash
+ssh -T git@github.com
+# Expected: Hi <username>! You've successfully authenticated...
+```
+
+### Permanent setup via ~/.ssh/config
+
+To avoid setting `ssh_key` in every bundle or tap, configure SSH permanently:
+
+```
+# ~/.ssh/config
+Host github.com
+  IdentityFile ~/.ssh/id_ed25519
+  AddKeysToAgent yes
+  User git
+```
+
+With this in place, `ssh_key` in the skillsync config is optional — SSH picks the key automatically.
+
+### HTTPS alternative (PAT)
+
+For HTTPS repositories, use a credential helper or embed the token in the URL:
+
+```bash
+# Recommended: configure a credential helper
+git config --global credential.helper osxkeychain   # macOS
+git config --global credential.helper store         # Linux (saves in ~/.git-credentials)
+
+# Less secure: token directly in URL (avoid in shared configs)
+url: https://<token>@github.com/org/private-skills.git
+```

@@ -7,6 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/gitauth"
 )
 
 // execCommand is a variable to allow mocking in tests
@@ -32,7 +35,7 @@ func New(remoteBaseDir string) (*Syncer, error) {
 
 // SyncBundle clones (first time) or pulls (subsequent) a bundle
 // Uses atomic operations: clone to temp → move to final location
-func (s *Syncer) SyncBundle(ctx context.Context, bundleName, url, branch string) error {
+func (s *Syncer) SyncBundle(ctx context.Context, bundleName, url, branch, sshKey string) error {
 	if branch == "" {
 		branch = "main"
 	}
@@ -47,12 +50,19 @@ func (s *Syncer) SyncBundle(ctx context.Context, bundleName, url, branch string)
 		return err
 	}
 
+	// Load SSH key before any git operations if URL is SSH and key is provided
+	if gitauth.IsSSHURL(url) && sshKey != "" {
+		if err := gitauth.EnsureSSHKey(ctx, config.ExpandPath(sshKey)); err != nil {
+			return err
+		}
+	}
+
 	targetDir := filepath.Join(s.remoteBaseDir, bundleName)
 
 	// Check if bundle already exists
 	if _, err := os.Stat(filepath.Join(targetDir, ".git")); err == nil {
 		// Existing repo: git pull --ff-only
-		return s.pullBundle(ctx, targetDir)
+		return s.pullBundle(ctx, url, targetDir)
 	}
 
 	// New bundle: atomic clone via temp dir
@@ -76,6 +86,9 @@ func (s *Syncer) cloneBundle(ctx context.Context, url, branch, targetDir string)
 	cmd := execCommand(ctx, "git", "clone", "--branch", branch, "--depth", "1", url, tempDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if authErr := gitauth.WrapGitError(url, string(output)); authErr != nil {
+			return authErr
+		}
 		return fmt.Errorf("git clone failed: %w\nOutput: %s", err, output)
 	}
 
@@ -88,7 +101,7 @@ func (s *Syncer) cloneBundle(ctx context.Context, url, branch, targetDir string)
 }
 
 // pullBundle updates an existing Git repository
-func (s *Syncer) pullBundle(ctx context.Context, targetDir string) error {
+func (s *Syncer) pullBundle(ctx context.Context, url, targetDir string) error {
 	// Check for local modifications before pulling
 	statusCmd := execCommand(ctx, "git", "-C", targetDir, "status", "--porcelain")
 	statusOutput, err := statusCmd.CombinedOutput()
@@ -102,6 +115,9 @@ func (s *Syncer) pullBundle(ctx context.Context, targetDir string) error {
 	cmd := execCommand(ctx, "git", "-C", targetDir, "pull", "--ff-only")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if authErr := gitauth.WrapGitError(url, string(output)); authErr != nil {
+			return authErr
+		}
 		return fmt.Errorf("git pull failed: %w\nOutput: %s", err, output)
 	}
 	return nil

@@ -487,6 +487,155 @@ func TestTap_RoundTrip(t *testing.T) {
 	})
 }
 
+// TestBundle_SSHKey_Field verifies that Bundle.SSHKey is parsed from YAML correctly.
+func TestBundle_SSHKey_Field(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		wantKey  string
+		wantNil  bool
+	}{
+		{
+			name: "with ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+bundles:
+  - name: "private-bundle"
+    ssh_key: "~/.ssh/id_ed25519"
+    source:
+      type: "git"
+      url: "git@github.com:org/repo.git"
+      branch: "main"
+    skills: []
+`,
+			wantKey: "~/.ssh/id_ed25519",
+		},
+		{
+			name: "without ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+bundles:
+  - name: "public-bundle"
+    source:
+      type: "git"
+      url: "https://github.com/org/repo.git"
+      branch: "main"
+    skills: []
+`,
+			wantKey: "",
+		},
+		{
+			name: "empty ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+bundles:
+  - name: "empty-key-bundle"
+    ssh_key: ""
+    source:
+      type: "git"
+      url: "https://github.com/org/repo.git"
+      branch: "main"
+    skills: []
+`,
+			wantKey: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() error = %v, want nil", err)
+			}
+			if len(cfg.Bundles) != 1 {
+				t.Fatalf("len(cfg.Bundles) = %d, want 1", len(cfg.Bundles))
+			}
+			if got := cfg.Bundles[0].SSHKey; got != tt.wantKey {
+				t.Errorf("Bundle.SSHKey = %q, want %q", got, tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestBundle_SSHKey_OmitEmpty verifies that SSHKey is omitted from YAML when empty.
+func TestBundle_SSHKey_OmitEmpty(t *testing.T) {
+	bundle := Bundle{
+		Name: "test",
+		Source: &Source{Type: "git", URL: "https://github.com/org/repo.git", Branch: "main"},
+	}
+	data, err := yaml.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if contains(string(data), "ssh_key") {
+		t.Errorf("yaml output should not contain 'ssh_key' when empty:\n%s", string(data))
+	}
+}
+
+// TestTap_SSHKey_Field verifies that Tap.SSHKey is parsed from YAML correctly.
+func TestTap_SSHKey_Field(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantKey string
+	}{
+		{
+			name: "with ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+taps:
+  - name: "private-tap"
+    url: "git@github.com:org/tap.git"
+    branch: "main"
+    ssh_key: "~/.ssh/id_ed25519"
+`,
+			wantKey: "~/.ssh/id_ed25519",
+		},
+		{
+			name: "without ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+taps:
+  - name: "public-tap"
+    url: "https://github.com/org/tap.git"
+    branch: "main"
+`,
+			wantKey: "",
+		},
+		{
+			name: "empty ssh_key",
+			yaml: `registry_path: "~/.agents/skills"
+taps:
+  - name: "empty-tap"
+    url: "https://github.com/org/tap.git"
+    branch: "main"
+    ssh_key: ""
+`,
+			wantKey: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() error = %v, want nil", err)
+			}
+			if len(cfg.Taps) != 1 {
+				t.Fatalf("len(cfg.Taps) = %d, want 1", len(cfg.Taps))
+			}
+			if got := cfg.Taps[0].SSHKey; got != tt.wantKey {
+				t.Errorf("Tap.SSHKey = %q, want %q", got, tt.wantKey)
+			}
+		})
+	}
+}
+
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

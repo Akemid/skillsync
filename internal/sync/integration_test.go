@@ -77,7 +77,7 @@ func TestSyncBundle_EndToEnd(t *testing.T) {
 	url := "file://" + sourceRepo
 
 	// First sync: should clone
-	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main"); err != nil {
+	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main", ""); err != nil {
 		t.Fatalf("SyncBundle (clone) error = %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestSyncBundle_EndToEnd(t *testing.T) {
 	// Second sync: should pull the new commit
 	// Unshallow first so pull works from a depth-1 clone
 	mustRunIn(t, bundleDir, "git", "fetch", "--unshallow")
-	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main"); err != nil {
+	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main", ""); err != nil {
 		t.Fatalf("SyncBundle (pull) error = %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestSyncBundle_AtomicOperations(t *testing.T) {
 	ctx := context.Background()
 	// Point to a nonexistent path to force git clone failure
 	badURL := "file:///nonexistent-path-that-does-not-exist"
-	err = syncer.SyncBundle(ctx, "fail-bundle", badURL, "main")
+	err = syncer.SyncBundle(ctx, "fail-bundle", badURL, "main", "")
 	if err == nil {
 		t.Fatal("SyncBundle() error = nil, want error for bad URL")
 	}
@@ -153,7 +153,7 @@ func TestRegistry_DiscoverAfterSync(t *testing.T) {
 	ctx := context.Background()
 	url := "file://" + sourceRepo
 
-	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main"); err != nil {
+	if err := syncer.SyncBundle(ctx, "test-bundle", url, "main", ""); err != nil {
 		t.Fatalf("SyncBundle error = %v", err)
 	}
 

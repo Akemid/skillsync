@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/gitauth"
 )
 
 // execCommand is a variable to allow mocking in tests
@@ -43,6 +44,13 @@ func (t *Tapper) Upload(ctx context.Context, tap config.Tap, skillPath, skillNam
 		return err
 	}
 
+	// Load SSH key before any git operations if URL is SSH and key is provided
+	if gitauth.IsSSHURL(tap.URL) && tap.SSHKey != "" {
+		if err := gitauth.EnsureSSHKey(ctx, config.ExpandPath(tap.SSHKey)); err != nil {
+			return err
+		}
+	}
+
 	// Clone into a temporary directory
 	tempDir, err := os.MkdirTemp("", ".skillsync-tap-*")
 	if err != nil {
@@ -53,6 +61,9 @@ func (t *Tapper) Upload(ctx context.Context, tap config.Tap, skillPath, skillNam
 	// git clone --branch <branch> --depth 1 <url> <tempDir>
 	cloneCmd := execCommand(ctx, "git", "clone", "--branch", branch, "--depth", "1", tap.URL, tempDir)
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		if authErr := gitauth.WrapGitError(tap.URL, string(out)); authErr != nil {
+			return authErr
+		}
 		return fmt.Errorf("git clone failed: %w\nOutput: %s", err, out)
 	}
 
@@ -91,6 +102,9 @@ func (t *Tapper) Upload(ctx context.Context, tap config.Tap, skillPath, skillNam
 	// git -C <tempDir> push
 	pushCmd := execCommand(ctx, "git", "-C", tempDir, "push")
 	if out, err := pushCmd.CombinedOutput(); err != nil {
+		if authErr := gitauth.WrapGitError(tap.URL, string(out)); authErr != nil {
+			return authErr
+		}
 		return fmt.Errorf("git push failed: %w\nOutput: %s", err, out)
 	}
 

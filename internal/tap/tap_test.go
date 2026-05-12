@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Akemid/skillsync/internal/config"
+	"github.com/Akemid/skillsync/internal/gitauth"
 )
 
 // callLog records which git subcommands were invoked by the mock
@@ -225,6 +226,139 @@ func TestUpload_PushFails_NoResidue(t *testing.T) {
 		if _, statErr := os.Stat(capturedTempDir); !os.IsNotExist(statErr) {
 			t.Errorf("temp dir %q still exists after push failure — residue not cleaned up", capturedTempDir)
 		}
+	}
+}
+
+// TestUpload_SSHKey_LoadedBeforeClone verifies that a failing ssh-add causes Upload
+// to return an error before git clone is attempted (proving call order).
+func TestUpload_SSHKey_LoadedBeforeClone(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	cloneCalled := false
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			cloneCalled = true
+			return exec.Command("true")
+		}
+		return exec.Command(name, args...)
+	}
+
+	// Make ssh-add fail so we confirm it's called before clone
+	origSSHAdd := gitauth.SetExecCommand(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ssh-add" {
+			return exec.Command("sh", "-c", "echo 'failed' >&2; exit 1")
+		}
+		return exec.Command(name, args...)
+	})
+	defer gitauth.SetExecCommand(origSSHAdd)
+
+	registryPath := t.TempDir()
+	skillDir := filepath.Join(registryPath, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tapper, err := New(registryPath)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tap := config.Tap{Name: "private-tap", URL: "git@github.com:user/tap.git", Branch: "main", SSHKey: "/home/user/.ssh/id_ed25519"}
+	ctx := context.Background()
+
+	err = tapper.Upload(ctx, tap, skillDir, "my-skill", false)
+	if err == nil {
+		t.Fatal("Upload() error = nil, want error because ssh-add failed")
+	}
+	if cloneCalled {
+		t.Error("git clone should NOT be called when ssh-add fails (ordering: ssh-add before clone)")
+	}
+}
+
+// TestUpload_SSHKey_SkippedForHTTPS verifies that ssh-add is NOT called for HTTPS URLs even if SSHKey is set.
+func TestUpload_SSHKey_SkippedForHTTPS(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	sshAddCalled := false
+	origSSHAdd := gitauth.SetExecCommand(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ssh-add" {
+			sshAddCalled = true
+		}
+		return exec.Command("true")
+	})
+	defer gitauth.SetExecCommand(origSSHAdd)
+
+	registryPath := t.TempDir()
+	skillDir := filepath.Join(registryPath, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var log callLog
+	execCommand = successExec(&log)
+
+	tapper, err := New(registryPath)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// HTTPS URL + non-empty SSHKey → ssh-add must NOT be called
+	tap := config.Tap{Name: "public-tap", URL: "https://github.com/user/tap.git", Branch: "main", SSHKey: "/home/user/.ssh/id_ed25519"}
+	ctx := context.Background()
+
+	if err := tapper.Upload(ctx, tap, skillDir, "my-skill", false); err != nil {
+		t.Fatalf("Upload() error = %v, want nil", err)
+	}
+
+	if sshAddCalled {
+		t.Error("ssh-add should NOT be called for HTTPS URLs")
+	}
+}
+
+// TestUpload_AuthError_Wrapped verifies auth errors from git clone are wrapped with helpful messages.
+func TestUpload_AuthError_Wrapped(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			return exec.Command("sh", "-c", "echo 'Authentication failed for url' >&2; exit 1")
+		}
+		return exec.Command(name, args...)
+	}
+
+	registryPath := t.TempDir()
+	skillDir := filepath.Join(registryPath, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\n---\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tapper, err := New(registryPath)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tap := config.Tap{Name: "private-tap", URL: "https://github.com/user/tap.git", Branch: "main"}
+	ctx := context.Background()
+
+	err = tapper.Upload(ctx, tap, skillDir, "my-skill", false)
+	if err == nil {
+		t.Fatal("Upload() error = nil, want error")
+	}
+
+	if !containsStr(err.Error(), "token") && !containsStr(err.Error(), "credential") {
+		t.Errorf("error = %q, want to contain 'token' or 'credential'", err.Error())
 	}
 }
 

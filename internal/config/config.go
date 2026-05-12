@@ -43,8 +43,9 @@ type Bundle struct {
 	Description string     `yaml:"description,omitempty"`
 	Company     string     `yaml:"company,omitempty"`
 	Tags        []string   `yaml:"tags,omitempty"`
-	Tech        []string   `yaml:"tech,omitempty"`   // technologies this bundle applies to
+	Tech        []string   `yaml:"tech,omitempty"`    // technologies this bundle applies to
 	Source      *Source    `yaml:"source,omitempty"` // Optional Git source, nil = local-only
+	SSHKey      string     `yaml:"ssh_key,omitempty"` // Optional SSH key path for private repos
 	Skills      []SkillRef `yaml:"skills"`
 }
 
@@ -53,6 +54,7 @@ type Tap struct {
 	Name   string `yaml:"name"`
 	URL    string `yaml:"url"`
 	Branch string `yaml:"branch"`
+	SSHKey string `yaml:"ssh_key,omitempty"` // Optional SSH key path for private repos
 }
 
 // Config is the top-level skillsync configuration

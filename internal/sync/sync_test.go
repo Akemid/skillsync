@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/Akemid/skillsync/internal/gitauth"
 )
 
 // TestNew verifies Syncer constructor
@@ -47,7 +49,7 @@ func TestSyncBundle_FirstClone(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "test-bundle", "https://github.com/test/repo", "main")
+	err = syncer.SyncBundle(ctx, "test-bundle", "https://github.com/test/repo", "main", "")
 
 	// Note: This test will fail because our mock doesn't actually create the .git directory
 	// In a real implementation, we'd need a more sophisticated mock or integration test
@@ -90,7 +92,7 @@ func TestSyncBundle_UpdateExisting(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "existing-bundle", "https://github.com/test/repo", "main")
+	err = syncer.SyncBundle(ctx, "existing-bundle", "https://github.com/test/repo", "main", "")
 	if err != nil {
 		t.Errorf("SyncBundle() error = %v, want nil", err)
 	}
@@ -122,7 +124,7 @@ func TestSyncBundle_NetworkFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "fail-bundle", "https://github.com/test/repo", "main")
+	err = syncer.SyncBundle(ctx, "fail-bundle", "https://github.com/test/repo", "main", "")
 
 	if err == nil {
 		t.Error("SyncBundle() error = nil, want error for failed clone")
@@ -203,7 +205,7 @@ func TestSyncBundle_InvalidURL(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "test-bundle", "invalid-url", "main")
+	err = syncer.SyncBundle(ctx, "test-bundle", "invalid-url", "main", "")
 
 	if err == nil {
 		t.Error("SyncBundle() error = nil, want error for invalid URL")
@@ -236,7 +238,7 @@ func TestSyncBundle_DefaultBranch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_ = syncer.SyncBundle(ctx, "test-bundle", "https://github.com/test/repo", "")
+	_ = syncer.SyncBundle(ctx, "test-bundle", "https://github.com/test/repo", "", "")
 
 	// Verify "main" was used as default branch
 	foundBranch := false
@@ -250,6 +252,176 @@ func TestSyncBundle_DefaultBranch(t *testing.T) {
 
 	if !foundBranch {
 		t.Errorf("default branch 'main' was not used, args: %v", capturedArgs)
+	}
+}
+
+// TestSyncBundle_SignatureAcceptsSSHKey is a compile-time check that SyncBundle accepts 5 args.
+func TestSyncBundle_SignatureAcceptsSSHKey(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.Command("true")
+	}
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	// Must compile with 5 args (bundleName, url, branch, sshKey)
+	_ = syncer.SyncBundle(ctx, "test-bundle", "https://github.com/test/repo", "main", "")
+}
+
+// TestSyncBundle_SSHKey_LoadedBeforeClone verifies that when an SSH key is set,
+// a failing ssh-add causes SyncBundle to return an error BEFORE attempting git clone.
+// This confirms the ordering: EnsureSSHKey is called first and its errors propagate.
+func TestSyncBundle_SSHKey_LoadedBeforeClone(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	cloneCalled := false
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			cloneCalled = true
+			return exec.Command("echo", "mocked")
+		}
+		return exec.Command(name, args...)
+	}
+
+	// Use the gitauth test hook to make ssh-add fail
+	origSSHAdd := gitauth.SetExecCommand(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ssh-add" {
+			return exec.Command("sh", "-c", "echo 'failed' >&2; exit 1")
+		}
+		return exec.Command(name, args...)
+	})
+	defer gitauth.SetExecCommand(origSSHAdd)
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	err = syncer.SyncBundle(ctx, "private-bundle", "git@github.com:org/repo.git", "main", "/home/user/.ssh/id_ed25519")
+
+	// ssh-add failed → SyncBundle must return an error
+	if err == nil {
+		t.Fatal("SyncBundle() error = nil, want error because ssh-add failed")
+	}
+	// git clone must NOT have been called (ssh-add ran before clone)
+	if cloneCalled {
+		t.Error("git clone should NOT be called when ssh-add fails (ordering: ssh-add before clone)")
+	}
+}
+
+// TestSyncBundle_AuthError_Wrapped verifies that auth errors from git output are wrapped.
+func TestSyncBundle_AuthError_Wrapped(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			return exec.Command("sh", "-c", "echo 'Permission denied (publickey).' >&2; exit 1")
+		}
+		return exec.Command(name, args...)
+	}
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	err = syncer.SyncBundle(ctx, "private-bundle", "git@github.com:org/repo.git", "main", "")
+	if err == nil {
+		t.Fatal("SyncBundle() error = nil, want error")
+	}
+	if !contains(err.Error(), "ssh-add") {
+		t.Errorf("error = %q, want to contain 'ssh-add'", err.Error())
+	}
+}
+
+// TestSyncBundle_SSHKey_SkippedForHTTPS verifies that ssh-add is NOT called for HTTPS URLs
+// even when a non-empty sshKey is provided, because IsSSHURL returns false for HTTPS.
+func TestSyncBundle_SSHKey_SkippedForHTTPS(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	cloneAttempted := false
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			cloneAttempted = true
+			return exec.Command("echo", "mocked clone")
+		}
+		return exec.Command(name, args...)
+	}
+
+	sshAddCallCount := 0
+	origSSHAdd := gitauth.SetExecCommand(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ssh-add" {
+			sshAddCallCount++
+		}
+		return exec.Command("true")
+	})
+	defer gitauth.SetExecCommand(origSSHAdd)
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	// HTTPS URL with non-empty sshKey: ssh-add must NOT be called
+	_ = syncer.SyncBundle(ctx, "test-bundle", "https://example.com/repo.git", "main", "/home/user/.ssh/id_ed25519")
+
+	if sshAddCallCount != 0 {
+		t.Errorf("ssh-add was called %d time(s), want 0 for HTTPS URL", sshAddCallCount)
+	}
+	if !cloneAttempted {
+		t.Error("git clone should be attempted for HTTPS URL with sshKey set")
+	}
+}
+
+// TestSyncBundle_SSHKey_EmptyNoOp verifies that ssh-add is NOT called when sshKey is empty,
+// even for an SSH URL.
+func TestSyncBundle_SSHKey_EmptyNoOp(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			return exec.Command("echo", "mocked clone")
+		}
+		return exec.Command(name, args...)
+	}
+
+	sshAddCallCount := 0
+	origSSHAdd := gitauth.SetExecCommand(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ssh-add" {
+			sshAddCallCount++
+		}
+		return exec.Command("true")
+	})
+	defer gitauth.SetExecCommand(origSSHAdd)
+
+	tempDir := t.TempDir()
+	syncer, err := New(tempDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx := context.Background()
+	// SSH URL with empty sshKey: EnsureSSHKey is a no-op, ssh-add must NOT be called
+	_ = syncer.SyncBundle(ctx, "test-bundle", "git@github.com:org/repo.git", "main", "")
+
+	if sshAddCallCount != 0 {
+		t.Errorf("ssh-add was called %d time(s), want 0 when sshKey is empty", sshAddCallCount)
 	}
 }
 
@@ -288,7 +460,7 @@ func TestSyncBundle_GitNotInstalled(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "any-bundle", "https://github.com/test/repo", "main")
+	err = syncer.SyncBundle(ctx, "any-bundle", "https://github.com/test/repo", "main", "")
 	if err == nil {
 		t.Fatal("SyncBundle() error = nil, want error when git is missing")
 	}
@@ -327,7 +499,7 @@ func TestSyncBundle_LocalModifications(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = syncer.SyncBundle(ctx, "dirty-bundle", "https://github.com/test/repo", "main")
+	err = syncer.SyncBundle(ctx, "dirty-bundle", "https://github.com/test/repo", "main", "")
 	if err == nil {
 		t.Fatal("SyncBundle() error = nil, want error for local modifications")
 	}

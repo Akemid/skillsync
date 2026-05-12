@@ -822,7 +822,7 @@ func downloadRemoteBundle(cfg *config.Config, b config.Bundle) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if err := syncer.SyncBundle(ctx, b.Name, b.Source.URL, b.Source.Branch); err != nil {
+	if err := syncer.SyncBundle(ctx, b.Name, b.Source.URL, b.Source.Branch, b.SSHKey); err != nil {
 		return fmt.Errorf("auto-sync failed for bundle %q: %w\n\nRun manually: skillsync sync", b.Name, err)
 	}
 

@@ -314,7 +314,7 @@ func cmdSync(cfg *config.Config) error {
 		}
 
 		fmt.Printf("  Syncing %s from %s...\n", bundle.Name, bundle.Source.URL)
-		if err := syncer.SyncBundle(ctx, bundle.Name, bundle.Source.URL, bundle.Source.Branch); err != nil {
+		if err := syncer.SyncBundle(ctx, bundle.Name, bundle.Source.URL, bundle.Source.Branch, bundle.SSHKey); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ %s failed: %v\n", bundle.Name, err)
 			anyFailed = true
 		} else {
@@ -1034,7 +1034,7 @@ func syncRemoteBundlesIfNeeded(cfg *config.Config, bundleNames []string) error {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		syncErr := syncer.SyncBundle(ctx, name, b.Source.URL, b.Source.Branch)
+		syncErr := syncer.SyncBundle(ctx, name, b.Source.URL, b.Source.Branch, b.SSHKey)
 		cancel()
 
 		if syncErr != nil {
